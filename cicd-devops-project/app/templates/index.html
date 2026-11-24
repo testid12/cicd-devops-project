@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ project_name }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="container">
+    <header class="hero">
+      <h1>🚀 {{ project_name }}</h1>
+      <p class="subtitle">End-to-end CI/CD Demo Application</p>
+    </header>
+
+    <main class="grid">
+      <section class="card">
+        <h2>Project Info</h2>
+        <table>
+          <tr><td>Developer</td><td>{{ developer }}</td></tr>
+          <tr><td>Environment</td><td><span class="badge">{{ deploy_env }}</span></td></tr>
+          <tr><td>Hostname</td><td>{{ hostname }}</td></tr>
+          <tr><td>Server Time</td><td>{{ server_time }}</td></tr>
+        </table>
+      </section>
+
+      <section class="card">
+        <h2>CI/CD Pipeline Status</h2>
+        <table>
+          <tr><td>Status</td><td><span class="status-ok">● {{ pipeline_status }}</span></td></tr>
+          <tr><td>App Version</td><td>{{ app_version }}</td></tr>
+          <tr><td>Build Number</td><td>#{{ build_number }}</td></tr>
+          <tr><td>Git Commit</td><td><code>{{ git_commit }}</code></td></tr>
+        </table>
+      </section>
+
+      <section class="card">
+        <h2>Health Check</h2>
+        <p>This service exposes a health endpoint used by Docker, Jenkins
+        and load balancers to verify it is running correctly.</p>
+        <a class="btn" href="/health">GET /health</a>
+        <a class="btn btn-secondary" href="/api/version">GET /api/version</a>
+      </section>
+    </main>
+
+    <footer>
+      <p>Built with Flask &middot; Deployed via Jenkins + Docker + Terraform on AWS</p>
+    </footer>
+  </div>
+</body>
+</html>
