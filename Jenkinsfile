@@ -130,7 +130,7 @@ pipeline {
 
                 script {
 
-                    withSonarQubeEnv('sonarqube-server') {
+                    withSonarQubeEnv('SonarQube') {
 
                         bat '''
                             .venv\\Scripts\\python.exe -m pip install flake8
