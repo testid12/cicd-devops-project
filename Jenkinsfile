@@ -3,23 +3,6 @@
 // Jenkins, Docker, Terraform, AWS
 // Windows Jenkins Agent version
 // -----------------------------------------------------------------------
-//
-// Required Jenkins credentials:
-//   dockerhub-creds -> Username/Password
-//   aws-creds       -> AWS credentials
-//   ec2-ssh-key     -> SSH Username with private key
-//   github-creds    -> Optional, only if GitHub repo is private
-//
-// Required Jenkins plugins:
-//   Pipeline
-//   Docker Pipeline
-//   Credentials Binding
-//   AWS Credentials
-//   SSH Agent
-//   Git
-//   JUnit
-//   HTML Publisher
-// -----------------------------------------------------------------------
 
 pipeline {
     agent any
@@ -32,16 +15,18 @@ pipeline {
     }
 
     environment {
+
         // ---------------------------------------------------------------
         // USER SETTINGS
         // ---------------------------------------------------------------
+
         DOCKERHUB_USERNAME = 'princeydv77'
         DOCKER_IMAGE_NAME  = "${DOCKERHUB_USERNAME}/cicd-demo-app"
 
         AWS_REGION         = 'ap-south-1'
         EC2_SSH_USER       = 'ubuntu'
 
-        // Docker Hub credentials
+        // Jenkins Docker Hub credentials
         DOCKER_CREDS = credentials('dockerhub-creds')
     }
 
@@ -53,13 +38,15 @@ pipeline {
 
         stage('Checkout') {
             steps {
+
                 echo "==> Cloning repository"
 
                 checkout scm
 
                 script {
+
                     env.GIT_COMMIT_SHORT = bat(
-                        script: 'git rev-parse --short HEAD',
+                        script: '@git rev-parse --short HEAD',
                         returnStdout: true
                     ).trim()
 
@@ -72,12 +59,14 @@ pipeline {
             }
         }
 
-   // ===============================================================
+
+        // ===============================================================
         // BUILD
         // ===============================================================
 
         stage('Build') {
             steps {
+
                 echo "==> Installing dependencies and building the app"
 
                 bat '''
@@ -94,12 +83,14 @@ pipeline {
             }
         }
 
+
         // ===============================================================
         // TEST
         // ===============================================================
 
         stage('Test') {
             steps {
+
                 echo "==> Running automated tests"
 
                 bat '''
@@ -120,36 +111,58 @@ pipeline {
             }
         }
 
+
         // ===============================================================
         // CODE QUALITY
         // ===============================================================
 
         stage('Code Quality') {
+
             steps {
+
                 echo "==> Running SonarQube analysis"
 
                 script {
 
+                    // IMPORTANT:
+                    // "SonarQube" = Jenkins SonarQube SERVER configuration
+                    // "SonarScanner" = Jenkins SonarScanner TOOL installation
+
+                    def scannerHome = tool 'SonarScanner'
+
+                    echo "SonarScanner location: ${scannerHome}"
+
                     withSonarQubeEnv('SonarQube') {
 
-                        bat '''
-                            .venv\\Scripts\\python.exe -m pip install flake8
+                        bat """
+                            echo.
+                            echo ===============================================
+                            echo Running Flake8
+                            echo ===============================================
 
-                            .venv\\Scripts\\python.exe -m flake8 app ^
+                            .venv\\\\Scripts\\\\python.exe -m pip install flake8
+
+                            .venv\\\\Scripts\\\\python.exe -m flake8 app ^
                                 --max-line-length=120 ^
                                 --exit-zero ^
                                 > flake8-report.txt
 
-                            sonar-scanner.bat ^
+                            echo.
+                            echo ===============================================
+                            echo Running SonarQube Scanner
+                            echo ===============================================
+
+                            "${scannerHome}\\\\bin\\\\sonar-scanner.bat" ^
                                 -Dsonar.projectKey=cicd-devops-project ^
                                 -Dsonar.sources=app ^
-                                -Dsonar.python.version=3.12 ^
+                                -Dsonar.python.version=3.11 ^
                                 -Dsonar.python.coverage.reportPaths=coverage.xml
-                        '''
+                        """
                     }
                 }
             }
         }
+
 
         // ===============================================================
         // DOCKER BUILD
@@ -157,9 +170,12 @@ pipeline {
 
         stage('Docker Build') {
             steps {
+
                 echo "==> Building Docker image"
 
                 bat '''
+                    docker --version
+
                     docker build ^
                         --build-arg APP_VERSION=%IMAGE_TAG% ^
                         --build-arg BUILD_NUMBER=%BUILD_NUMBER% ^
@@ -171,12 +187,14 @@ pipeline {
             }
         }
 
+
         // ===============================================================
         // SECURITY SCAN
         // ===============================================================
 
         stage('Security Scan') {
             steps {
+
                 echo "==> Scanning image with Trivy"
 
                 bat '''
@@ -201,12 +219,14 @@ pipeline {
             }
         }
 
+
         // ===============================================================
         // DOCKER PUSH
         // ===============================================================
 
         stage('Docker Push') {
             steps {
+
                 echo "==> Pushing image to Docker Hub"
 
                 bat '''
@@ -223,11 +243,13 @@ pipeline {
             }
         }
 
+
         // ===============================================================
         // TERRAFORM INIT
         // ===============================================================
 
         stage('Terraform Init') {
+
             steps {
 
                 dir('terraform') {
@@ -247,11 +269,13 @@ pipeline {
             }
         }
 
+
         // ===============================================================
         // TERRAFORM VALIDATE
         // ===============================================================
 
         stage('Terraform Validate') {
+
             steps {
 
                 dir('terraform') {
@@ -263,11 +287,13 @@ pipeline {
             }
         }
 
+
         // ===============================================================
         // TERRAFORM PLAN
         // ===============================================================
 
         stage('Terraform Plan') {
+
             steps {
 
                 dir('terraform') {
@@ -290,11 +316,13 @@ pipeline {
             }
         }
 
+
         // ===============================================================
         // TERRAFORM APPLY
         // ===============================================================
 
         stage('Terraform Apply') {
+
             steps {
 
                 dir('terraform') {
@@ -316,7 +344,7 @@ pipeline {
                         script {
 
                             env.EC2_PUBLIC_IP = bat(
-                                script: 'terraform output -raw ec2_public_ip',
+                                script: '@terraform output -raw ec2_public_ip',
                                 returnStdout: true
                             ).trim()
 
@@ -327,11 +355,13 @@ pipeline {
             }
         }
 
+
         // ===============================================================
         // DEPLOY
         // ===============================================================
 
         stage('Deploy') {
+
             steps {
 
                 echo "==> Deploying new image to EC2 (${env.EC2_PUBLIC_IP})"
@@ -345,7 +375,9 @@ pipeline {
 
                     bat '''
                         echo.
-                        echo ==> Copying deployment script to EC2...
+                        echo ===============================================
+                        echo Copying deployment script to EC2
+                        echo ===============================================
 
                         scp -i "%SSH_KEY%" ^
                             -o StrictHostKeyChecking=no ^
@@ -353,7 +385,9 @@ pipeline {
                             %EC2_SSH_USER%@%EC2_PUBLIC_IP%:/tmp/deploy.sh
 
                         echo.
-                        echo ==> Executing deployment script on EC2...
+                        echo ===============================================
+                        echo Executing deployment script on EC2
+                        echo ===============================================
 
                         ssh -i "%SSH_KEY%" ^
                             -o StrictHostKeyChecking=no ^
@@ -364,28 +398,31 @@ pipeline {
             }
         }
 
+
         // ===============================================================
         // HEALTH CHECK
         // ===============================================================
 
         stage('Health Check') {
+
             steps {
 
                 echo "==> Verifying application health"
 
-                script {
+                bat '''
+                    echo.
+                    echo ===============================================
+                    echo Checking application health
+                    echo ===============================================
 
-                    bat '''
-                        echo Checking application health...
-
-                        curl.exe --fail ^
-                            --max-time 30 ^
-                            http://%EC2_PUBLIC_IP%:5000/health
-                    '''
-                }
+                    curl.exe --fail ^
+                        --max-time 30 ^
+                        http://%EC2_PUBLIC_IP%:5000/health
+                '''
             }
         }
     }
+
 
     // ===================================================================
     // POST ACTIONS
@@ -394,6 +431,7 @@ pipeline {
     post {
 
         success {
+
             echo "================================================="
             echo "Pipeline succeeded!"
             echo "App deployed at: http://${env.EC2_PUBLIC_IP}:5000"
@@ -401,6 +439,7 @@ pipeline {
         }
 
         failure {
+
             echo "================================================="
             echo "Pipeline failed."
             echo "Check the stage logs above for details."
@@ -411,9 +450,21 @@ pipeline {
 
             echo "==> Cleaning workspace"
 
-            // Windows Jenkins agent
+            // -----------------------------------------------------------
+            // IMPORTANT:
+            // Do NOT allow Docker cleanup to cause another pipeline
+            // failure if Docker is unavailable.
+            // -----------------------------------------------------------
+
             bat '''
-                docker image prune -f
+                where docker >nul 2>&1
+
+                if %ERRORLEVEL% EQU 0 (
+                    echo Docker found. Cleaning unused images...
+                    docker image prune -f
+                ) else (
+                    echo Docker not found. Skipping Docker cleanup.
+                )
             '''
 
             cleanWs()
