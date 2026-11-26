@@ -18,31 +18,37 @@ pipeline {
 
         stage('Setup Python') {
             steps {
-                bat '''
-                    if exist venv rmdir /s /q venv
-                    python -m venv venv
-                    call venv\\Scripts\\activate
-                    python -m pip install --upgrade pip
-                    pip install -r requirements.txt
-                '''
+                dir('app') {
+                    bat '''
+                        if exist venv rmdir /s /q venv
+                        python -m venv venv
+                        call venv\\Scripts\\activate
+                        python -m pip install --upgrade pip
+                        pip install -r requirements.txt
+                    '''
+                }
             }
         }
 
         stage('Tests') {
             steps {
-                bat '''
-                    call venv\\Scripts\\activate
-                    pytest -v
-                '''
+                dir('app') {
+                    bat '''
+                        call venv\\Scripts\\activate
+                        pytest -v
+                    '''
+                }
             }
         }
 
         stage('Flake8') {
             steps {
-                bat '''
-                    call venv\\Scripts\\activate
-                    flake8 . --exclude=venv,.git --exit-zero
-                '''
+                dir('app') {
+                    bat '''
+                        call venv\\Scripts\\activate
+                        flake8 . --exclude=venv,.git --exit-zero
+                    '''
+                }
             }
         }
 
@@ -57,7 +63,7 @@ pipeline {
                     bat '''
                         sonar-scanner ^
                           -Dsonar.projectKey=cicd-devops-project ^
-                          -Dsonar.sources=. ^
+                          -Dsonar.sources=app ^
                           -Dsonar.host.url=http://localhost:9000 ^
                           -Dsonar.token=%SONAR_TOKEN%
                     '''
@@ -68,7 +74,7 @@ pipeline {
         stage('Security Scan') {
             steps {
                 bat '''
-                    trivy fs . --exit-code 0 --severity HIGH,CRITICAL --skip-dirs venv
+                    trivy fs . --exit-code 0 --severity HIGH,CRITICAL --skip-dirs app\\venv
                 '''
             }
         }
@@ -164,9 +170,6 @@ pipeline {
                 ]) {
                     bat '''
                         echo Deploying application...
-
-                        REM Replace YOUR_EC2_PUBLIC_IP in the environment section
-                        REM with the actual Terraform-created EC2 public IP.
 
                         scp -i "%SSH_KEY%" -o StrictHostKeyChecking=no docker-compose.yml %SSH_USER%@%EC2_HOST%:/home/%SSH_USER%/
 
