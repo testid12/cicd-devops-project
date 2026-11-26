@@ -115,6 +115,21 @@ pipeline {
             }
         }
 
+        stage('Terraform Init') {
+            steps {
+                withCredentials([
+                    [$class: 'AmazonWebServicesCredentialsBinding',
+                     credentialsId: 'aws-creds']
+                ]) {
+                    dir('terraform') {
+                        bat '''
+                            terraform init
+                        '''
+                    }
+                }
+            }
+        }
+
         stage('Terraform Validate') {
             steps {
                 dir('terraform') {
