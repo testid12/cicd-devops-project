@@ -1,4 +1,5 @@
 pipeline {
+
     agent any
 
     options {
@@ -7,20 +8,23 @@ pipeline {
     }
 
     environment {
-        DOCKER_IMAGE       = 'princeydv77/cicd-demo-app'
-        DOCKER_TAG         = "${BUILD_NUMBER}"
-        DOCKER_LATEST      = 'latest'
+        DOCKER_IMAGE      = 'princeydv77/cicd-demo-app'
+        DOCKER_TAG        = "${BUILD_NUMBER}"
+        DOCKER_LATEST     = 'latest'
 
-        AWS_REGION         = 'ap-south-1'
-        EC2_INSTANCE_TYPE  = 't3.micro'
-        EC2_HOST           = ''
+        AWS_REGION        = 'ap-south-1'
+        EC2_INSTANCE_TYPE = 't3.micro'
 
-        DOCKER_CONFIG      = "${WORKSPACE}\\.docker"
-        DOCKER_CREDS       = credentials('dockerhub-test')
+        EC2_HOST          = ''
+
+        DOCKER_CONFIG     = "${WORKSPACE}\\.docker"
     }
 
     stages {
 
+        // =========================================================
+        // 1. CHECKOUT
+        // =========================================================
         stage('Checkout') {
             steps {
                 echo '=========================================='
@@ -31,10 +35,14 @@ pipeline {
             }
         }
 
+
+        // =========================================================
+        // 2. PYTHON SETUP
+        // =========================================================
         stage('Setup Python') {
             steps {
                 echo '=========================================='
-                echo ' STEP 2: SETUP PYTHON'
+                echo ' STEP 2: PYTHON SETUP'
                 echo '=========================================='
 
                 dir('app') {
@@ -48,12 +56,17 @@ pipeline {
                         python -m pip install --upgrade pip
 
                         pip install -r requirements.txt
+
                         pip install flake8 pytest-cov
                     '''
                 }
             }
         }
 
+
+        // =========================================================
+        // 3. TESTS
+        // =========================================================
         stage('Tests') {
             steps {
                 echo '=========================================='
@@ -70,6 +83,10 @@ pipeline {
             }
         }
 
+
+        // =========================================================
+        // 4. CODE QUALITY
+        // =========================================================
         stage('Code Quality') {
             steps {
                 echo '=========================================='
@@ -86,6 +103,10 @@ pipeline {
             }
         }
 
+
+        // =========================================================
+        // 5. SONARQUBE
+        // =========================================================
         stage('SonarQube Analysis') {
             steps {
                 echo '=========================================='
@@ -110,6 +131,10 @@ pipeline {
             }
         }
 
+
+        // =========================================================
+        // 6. SECURITY SCAN
+        // =========================================================
         stage('Security Scan') {
             steps {
                 echo '=========================================='
@@ -122,6 +147,10 @@ pipeline {
             }
         }
 
+
+        // =========================================================
+        // 7. DOCKER BUILD
+        // =========================================================
         stage('Docker Build') {
             steps {
                 echo '=========================================='
@@ -135,6 +164,10 @@ pipeline {
             }
         }
 
+
+        // =========================================================
+        // 8. DOCKER PUSH
+        // =========================================================
         stage('Docker Push') {
             steps {
                 echo '=========================================='
@@ -148,14 +181,12 @@ pipeline {
                         passwordVariable: 'DOCKER_PASS'
                     )
                 ]) {
+
                     bat '''
                         if exist "%DOCKER_CONFIG%" rmdir /s /q "%DOCKER_CONFIG%"
                         mkdir "%DOCKER_CONFIG%"
 
-                        powershell -NoProfile -Command ^
-                          "$auth = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('%DOCKER_USER%:%DOCKER_PASS%')); ^
-                           $json = @{auths=@{'https://index.docker.io/v1/'=@{auth=$auth}}} | ConvertTo-Json -Depth 5; ^
-                           Set-Content -Path '%DOCKER_CONFIG%\\config.json' -Value $json"
+                        powershell -NoProfile -Command "$auth=[Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($env:DOCKER_USER + ':' + $env:DOCKER_PASS)); $json='{\\\"auths\\\":{\\\"https://index.docker.io/v1/\\\":{\\\"auth\\\":\\\"' + $auth + '\\\"}}}'; Set-Content -Path ($env:DOCKER_CONFIG + '\\config.json') -Value $json -Encoding ASCII"
 
                         docker push %DOCKER_IMAGE%:%DOCKER_TAG%
                         docker push %DOCKER_IMAGE%:%DOCKER_LATEST%
@@ -164,25 +195,28 @@ pipeline {
             }
         }
 
+
+        // =========================================================
+        // 9. TERRAFORM INIT
+        // =========================================================
         stage('Terraform Init') {
             steps {
                 echo '=========================================='
                 echo ' STEP 9: TERRAFORM INIT'
                 echo '=========================================='
 
-                withCredentials([
-                    [$class: 'AmazonWebServicesCredentialsBinding',
-                     credentialsId: 'aws-creds']
-                ]) {
-                    dir('terraform') {
-                        bat '''
-                            terraform init
-                        '''
-                    }
+                dir('terraform') {
+                    bat '''
+                        terraform init -input=false
+                    '''
                 }
             }
         }
 
+
+        // =========================================================
+        // 10. TERRAFORM VALIDATE
+        // =========================================================
         stage('Terraform Validate') {
             steps {
                 echo '=========================================='
@@ -197,22 +231,28 @@ pipeline {
             }
         }
 
+
+        // =========================================================
+        // 11. IMPORT EXISTING IAM RESOURCES
+        // =========================================================
         stage('Terraform IAM Import') {
             steps {
                 echo '=========================================='
                 echo ' STEP 11: TERRAFORM IAM IMPORT'
                 echo '=========================================='
 
-                withCredentials([
-                    [$class: 'AmazonWebServicesCredentialsBinding',
-                     credentialsId: 'aws-creds']
-                ]) {
-                    dir('terraform') {
+                dir('terraform') {
+
+                    withCredentials([
+                        [$class: 'AmazonWebServicesCredentialsBinding',
+                         credentialsId: 'aws-creds']
+                    ]) {
+
                         bat '''
                             terraform state list | findstr /c:"module.ec2.aws_iam_role.ec2_role" >nul
 
                             if errorlevel 1 (
-                                echo Importing existing IAM role...
+                                echo IAM role not found in Terraform state. Importing...
                                 terraform import module.ec2.aws_iam_role.ec2_role cicd-devops-project-ec2-role
                             ) else (
                                 echo IAM role already exists in Terraform state. Skipping import.
@@ -221,7 +261,7 @@ pipeline {
                             terraform state list | findstr /c:"module.ec2.aws_iam_instance_profile.ec2_profile" >nul
 
                             if errorlevel 1 (
-                                echo Importing existing IAM instance profile...
+                                echo IAM instance profile not found in Terraform state. Importing...
                                 terraform import module.ec2.aws_iam_instance_profile.ec2_profile cicd-devops-project-ec2-profile
                             ) else (
                                 echo IAM instance profile already exists in Terraform state. Skipping import.
@@ -232,20 +272,28 @@ pipeline {
             }
         }
 
+
+        // =========================================================
+        // 12. TERRAFORM PLAN
+        // =========================================================
         stage('Terraform Plan') {
             steps {
                 echo '=========================================='
                 echo ' STEP 12: TERRAFORM PLAN'
                 echo '=========================================='
 
-                withCredentials([
-                    [$class: 'AmazonWebServicesCredentialsBinding',
-                     credentialsId: 'aws-creds']
-                ]) {
-                    dir('terraform') {
+                dir('terraform') {
+
+                    withCredentials([
+                        [$class: 'AmazonWebServicesCredentialsBinding',
+                         credentialsId: 'aws-creds']
+                    ]) {
+
                         bat '''
                             terraform plan ^
+                              -input=false ^
                               -var="instance_type=%EC2_INSTANCE_TYPE%" ^
+                              -var="docker_image=%DOCKER_IMAGE%:%DOCKER_LATEST%" ^
                               -out=tfplan
                         '''
                     }
@@ -253,132 +301,139 @@ pipeline {
             }
         }
 
+
+        // =========================================================
+        // 13. TERRAFORM APPLY
+        // =========================================================
         stage('Terraform Apply') {
             steps {
                 echo '=========================================='
                 echo ' STEP 13: TERRAFORM APPLY'
                 echo '=========================================='
 
-                withCredentials([
-                    [$class: 'AmazonWebServicesCredentialsBinding',
-                     credentialsId: 'aws-creds']
-                ]) {
-                    dir('terraform') {
-                        bat '''
-                            terraform apply -auto-approve tfplan
+                dir('terraform') {
 
-                            echo.
-                            echo ==========================================
-                            echo SAVING EC2 PUBLIC IP
-                            echo ==========================================
+                    withCredentials([
+                        [$class: 'AmazonWebServicesCredentialsBinding',
+                         credentialsId: 'aws-creds']
+                    ]) {
+
+                        bat '''
+                            terraform apply -input=false -auto-approve tfplan
 
                             terraform output -raw ec2_public_ip > ec2_public_ip.txt
-
-                            echo.
-                            echo EC2 IP saved to:
-                            type ec2_public_ip.txt
-                            echo.
                         '''
                     }
-                }
 
-                script {
-                    dir('terraform') {
-                        def ip = bat(
-                            script: 'type ec2_public_ip.txt',
-                            returnStdout: true
+                    script {
+
+                        def ip = readFile(
+                            file: 'terraform/ec2_public_ip.txt'
                         ).trim()
 
-                        echo '=========================================='
-                        echo "EC2 Public IP: ${ip}"
-                        echo '=========================================='
-
-                        if (!ip || ip == 'null' || ip == '0.0.0.0') {
-                            error("EC2 public IP could not be obtained from Terraform.")
+                        if (!ip || ip == 'null') {
+                            error("Terraform created/applied successfully, but EC2 public IP could not be captured.")
                         }
 
                         env.EC2_HOST = ip
+
+                        echo "=========================================="
+                        echo " EC2 PUBLIC IP: ${env.EC2_HOST}"
+                        echo " APPLICATION URL: http://${env.EC2_HOST}:5000"
+                        echo "=========================================="
                     }
                 }
             }
         }
 
+
+        // =========================================================
+        // 14. WAIT FOR SSH
+        // =========================================================
         stage('Wait for SSH') {
             steps {
                 echo '=========================================='
-                echo ' STEP 14: WAIT FOR EC2 SSH'
+                echo ' STEP 14: WAIT FOR SSH'
                 echo '=========================================='
 
                 script {
-                    if (!env.EC2_HOST?.trim()) {
-                        error('EC2_HOST is empty. Cannot connect to EC2.')
+
+                    if (!env.EC2_HOST || env.EC2_HOST == 'null') {
+                        error("EC2_HOST is empty. Cannot connect to EC2.")
                     }
 
-                    echo "Waiting for SSH on ${env.EC2_HOST}..."
+                    sshagent(credentials: ['cicd-key']) {
 
-                    def connected = false
+                        bat '''
+                            set SSH_OK=0
 
-                    for (int i = 1; i <= 12; i++) {
-                        try {
-                            sshagent(credentials: ['cicd-key']) {
-                                bat """
-                                    ssh -o StrictHostKeyChecking=no ^
-                                        -o ConnectTimeout=5 ^
-                                        ubuntu@${env.EC2_HOST} ^
-                                        "echo SSH_OK"
-                                """
-                            }
+                            for /L %%i in (1,1,12) do (
+                                echo Attempt %%i/12 to connect to %EC2_HOST%
 
-                            connected = true
-                            echo 'SSH connection successful.'
-                            break
+                                ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 ubuntu@%EC2_HOST% "echo SSH_OK"
 
-                        } catch (Exception e) {
-                            echo "SSH attempt ${i}/12 failed. Waiting 10 seconds..."
-                            sleep time: 10, unit: 'SECONDS'
-                        }
-                    }
+                                if not errorlevel 1 (
+                                    set SSH_OK=1
+                                    goto :ssh_success
+                                )
 
-                    if (!connected) {
-                        error("Unable to establish SSH connection to ${env.EC2_HOST}.")
+                                timeout /t 10 /nobreak >nul
+                            )
+
+                            :ssh_success
+
+                            if "%SSH_OK%"=="1" (
+                                echo SSH connection successful.
+                                exit /b 0
+                            )
+
+                            echo SSH connection failed after 12 attempts.
+                            exit /b 1
+                        '''
                     }
                 }
             }
         }
 
+
+        // =========================================================
+        // 15. DEPLOY
+        // =========================================================
         stage('Deploy') {
             steps {
                 echo '=========================================='
-                echo ' STEP 15: DEPLOY TO EC2'
+                echo ' STEP 15: DEPLOY APPLICATION'
                 echo '=========================================='
 
                 script {
-                    if (!env.EC2_HOST?.trim()) {
-                        error('EC2_HOST is empty. Cannot deploy.')
+
+                    if (!env.EC2_HOST || env.EC2_HOST == 'null') {
+                        error("EC2_HOST is empty. Cannot deploy.")
                     }
 
-                    withCredentials([
-                        usernamePassword(
-                            credentialsId: 'dockerhub-test',
-                            usernameVariable: 'DOCKER_USER',
-                            passwordVariable: 'DOCKER_PASS'
-                        )
-                    ]) {
-                        sshagent(credentials: ['cicd-key']) {
+                    sshagent(credentials: ['cicd-key']) {
 
-                            bat """
-                                ssh -o StrictHostKeyChecking=no ubuntu@${env.EC2_HOST} ^
-                                  "echo '%DOCKER_PASS%' | docker login -u '%DOCKER_USER%' --password-stdin && ^
-                                   docker pull %DOCKER_IMAGE%:%DOCKER_LATEST% && ^
-                                   docker rm -f cicd-demo-app 2>nul || true && ^
-                                   docker run -d --name cicd-demo-app -p 5000:5000 %DOCKER_IMAGE%:%DOCKER_LATEST%"
-                            """
+                        withCredentials([
+                            usernamePassword(
+                                credentialsId: 'dockerhub-test',
+                                usernameVariable: 'DOCKER_USER',
+                                passwordVariable: 'DOCKER_PASS'
+                            )
+                        ]) {
+
+                            bat '''
+                                ssh -o StrictHostKeyChecking=no ubuntu@%EC2_HOST% "echo '%DOCKER_PASS%' | docker login -u '%DOCKER_USER%' --password-stdin && docker pull %DOCKER_IMAGE%:%DOCKER_LATEST% && docker rm -f cicd-demo-app 2>/dev/null || true && docker run -d --name cicd-demo-app --restart unless-stopped -p 5000:5000 %DOCKER_IMAGE%:%DOCKER_LATEST%"
+                            '''
                         }
                     }
                 }
             }
         }
 
+
+        // =========================================================
+        // 16. HEALTH CHECK
+        // =========================================================
         stage('Health Check') {
             steps {
                 echo '=========================================='
@@ -386,49 +441,71 @@ pipeline {
                 echo '=========================================='
 
                 script {
-                    if (!env.EC2_HOST?.trim()) {
-                        error('EC2_HOST is empty. Cannot run health check.')
-                    }
 
-                    echo "Checking application at http://${env.EC2_HOST}:5000/"
+                    if (!env.EC2_HOST || env.EC2_HOST == 'null') {
+                        error("EC2_HOST is empty. Cannot perform health check.")
+                    }
 
                     def healthy = false
 
                     for (int i = 1; i <= 12; i++) {
+
+                        echo "Health check attempt ${i}/12..."
+
                         try {
+
                             powershell """
-                                \$response = Invoke-WebRequest `
-                                    -Uri "http://${env.EC2_HOST}:5000/" `
-                                    -UseBasicParsing `
-                                    -TimeoutSec 10
+                                try {
+                                    \$response = Invoke-WebRequest -Uri "http://${env.EC2_HOST}:5000/" -UseBasicParsing -TimeoutSec 10
 
-                                Write-Host "HTTP Status: \$($response.StatusCode)"
+                                    if (\$response.StatusCode -eq 200) {
+                                        Write-Host "APPLICATION HEALTH CHECK PASSED"
+                                        exit 0
+                                    }
 
-                                if (\$response.StatusCode -ne 200) {
+                                    exit 1
+                                }
+                                catch {
+                                    Write-Host "Application not ready yet."
                                     exit 1
                                 }
                             """
 
                             healthy = true
-                            echo 'Application health check PASSED.'
                             break
 
                         } catch (Exception e) {
-                            echo "Health check attempt ${i}/12 failed. Waiting 10 seconds..."
-                            sleep time: 10, unit: 'SECONDS'
+
+                            if (i -lt 12) {
+                                Start-Sleep -Seconds 10
+                            }
                         }
                     }
 
                     if (!healthy) {
-                        error("Application health check failed for http://${env.EC2_HOST}:5000/")
+                        error("Application health check failed after 12 attempts.")
                     }
+
+                    echo '=========================================='
+                    echo ' APPLICATION IS LIVE'
+                    echo " URL: http://${env.EC2_HOST}:5000/"
+                    echo '=========================================='
                 }
             }
         }
     }
 
+
+    // =============================================================
+    // POST ACTIONS
+    // =============================================================
     post {
+
         always {
+            echo '=========================================='
+            echo ' CLEANUP'
+            echo '=========================================='
+
             bat '''
                 if exist "%DOCKER_CONFIG%\\config.json" (
                     del /f /q "%DOCKER_CONFIG%\\config.json"
@@ -442,9 +519,18 @@ pipeline {
 
         success {
             echo '=========================================='
-            echo ' CI/CD PIPELINE SUCCESSFUL'
+            echo ' CI/CD PIPELINE SUCCESS'
             echo '=========================================='
-            echo "Application URL: http://${env.EC2_HOST}:5000"
+
+            script {
+                if (env.EC2_HOST) {
+                    echo "Application URL: http://${env.EC2_HOST}:5000/"
+                }
+            }
+
+            echo 'Docker image pushed successfully.'
+            echo 'Terraform deployment completed successfully.'
+            echo 'Application deployment completed successfully.'
             echo '=========================================='
         }
 
