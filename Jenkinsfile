@@ -140,6 +140,21 @@ pipeline {
             }
         }
 
+        stage('Terraform Import IAM Role') {
+            steps {
+                withCredentials([
+                    [$class: 'AmazonWebServicesCredentialsBinding',
+                     credentialsId: 'aws-creds']
+                ]) {
+                    dir('terraform') {
+                        bat '''
+                            terraform import aws_iam_role.ec2_role cicd-devops-project-ec2-role
+                        '''
+                    }
+                }
+            }
+        }
+
         stage('Terraform Plan') {
             steps {
                 withCredentials([
