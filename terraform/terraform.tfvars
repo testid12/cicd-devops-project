@@ -9,7 +9,7 @@ public_subnet_cidr = "10.0.1.0/24"
 instance_type     = "t2.micro"
 key_pair_name     = "cicd-key"
 
-ssh_allowed_cidr  = "YOUR_IP_ADDRESS/32"
+ssh_allowed_cidr  = "205.254.171.14/32"
 app_port          = 5000
 
 docker_image      = "princeydv77/cicd-demo-app:latest"
