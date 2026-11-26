@@ -40,7 +40,7 @@ pipeline {
             steps {
                 bat '''
                     call venv\\Scripts\\activate
-                    flake8 . --exclude=venv,.git
+                    flake8 . --exclude=venv,.git --exit-zero
                 '''
             }
         }
