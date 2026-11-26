@@ -1,12 +1,23 @@
 pipeline {
     agent any
 
+    options {
+        timestamps()
+        timeout(time: 45, unit: 'MINUTES')
+    }
+
     environment {
         DOCKER_IMAGE = 'princeydv77/cicd-demo-app'
-        AWS_REGION   = 'ap-south-1'
-        EC2_USER     = 'ubuntu'
-        EC2_HOST     = ''
+        DOCKER_TAG = "${BUILD_NUMBER}"
+        DOCKER_LATEST = 'latest'
+
+        AWS_REGION = 'ap-south-1'
         EC2_INSTANCE_TYPE = 't3.micro'
+        EC2_HOST = ''
+
+        DOCKER_CONFIG = "${WORKSPACE}\\.docker"
+
+        DOCKER_CREDS = credentials('dockerhub-test')
     }
 
     stages {
@@ -47,28 +58,43 @@ pipeline {
         stage('Tests') {
             steps {
                 echo '=========================================='
-                echo ' STEP 3: TESTS'
+                echo ' STEP 3: RUN TESTS'
                 echo '=========================================='
 
                 dir('app') {
                     bat '''
                         call venv\\Scripts\\activate
 
-                        pytest -v --cov=. --cov-report=term-missing
+                        pytest -v ^
+                          --junitxml=../test-results.xml ^
+                          --cov=. ^
+                          --cov-report=term-missing ^
+                          --cov-report=xml
                     '''
+                }
+            }
+
+            post {
+                always {
+                    junit 'test-results.xml'
                 }
             }
         }
 
-        stage('Flake8') {
+        stage('Code Quality') {
             steps {
                 echo '=========================================='
-                echo ' STEP 4: FLAKE8'
+                echo ' STEP 4: CODE QUALITY'
                 echo '=========================================='
 
                 dir('app') {
                     bat '''
                         call venv\\Scripts\\activate
+
+                        echo.
+                        echo ==========================================
+                        echo Running Flake8
+                        echo ==========================================
 
                         flake8 . --exclude=venv,.git --exit-zero
                     '''
@@ -76,27 +102,33 @@ pipeline {
             }
         }
 
-        stage('SonarQube') {
+        stage('SonarQube Analysis') {
             steps {
                 echo '=========================================='
-                echo ' STEP 5: SONARQUBE'
+                echo ' STEP 5: SONARQUBE ANALYSIS'
                 echo '=========================================='
 
-                withCredentials([
-                    string(
-                        credentialsId: 'sonarqube-token',
-                        variable: 'SONAR_TOKEN'
-                    )
-                ]) {
-                    bat '''
-                        sonar-scanner ^
-                          -Dsonar.projectKey=cicd-devops-project ^
-                          -Dsonar.projectName=cicd-devops-project ^
-                          -Dsonar.sources=app ^
-                          -Dsonar.python.version=3.12 ^
-                          -Dsonar.host.url=http://localhost:9000 ^
-                          -Dsonar.token=%SONAR_TOKEN%
-                    '''
+                script {
+                    def scannerHome = tool 'SonarScanner'
+
+                    withSonarQubeEnv('SonarQube') {
+                        withCredentials([
+                            string(
+                                credentialsId: 'sonarqube-token',
+                                variable: 'SONAR_TOKEN'
+                            )
+                        ]) {
+                            bat """
+                                "${scannerHome}\\bin\\sonar-scanner.bat" ^
+                                  -Dsonar.projectKey=cicd-devops-project ^
+                                  -Dsonar.projectName=cicd-devops-project ^
+                                  -Dsonar.sources=app ^
+                                  -Dsonar.python.version=3.11 ^
+                                  -Dsonar.host.url=%SONAR_HOST_URL% ^
+                                  -Dsonar.token=%SONAR_TOKEN%
+                            """
+                        }
+                    }
                 }
             }
         }
@@ -104,11 +136,11 @@ pipeline {
         stage('Security Scan') {
             steps {
                 echo '=========================================='
-                echo ' STEP 6: SECURITY SCAN'
+                echo ' STEP 6: TRIVY SECURITY SCAN'
                 echo '=========================================='
 
                 bat '''
-                    trivy fs . --exit-code 0 --severity HIGH,CRITICAL
+                    trivy fs --severity HIGH,CRITICAL --exit-code 0 .
                 '''
             }
         }
@@ -119,14 +151,10 @@ pipeline {
                 echo ' STEP 7: DOCKER BUILD'
                 echo '=========================================='
 
-                bat '''
-                    docker --version
-
-                    docker build ^
-                      -t %DOCKER_IMAGE%:%BUILD_NUMBER% ^
-                      -t %DOCKER_IMAGE%:latest ^
-                      .
-                '''
+                bat """
+                    docker build -t %DOCKER_IMAGE%:%DOCKER_TAG% .
+                    docker tag %DOCKER_IMAGE%:%DOCKER_TAG% %DOCKER_IMAGE%:%DOCKER_LATEST%
+                """
             }
         }
 
@@ -144,21 +172,16 @@ pipeline {
                     )
                 ]) {
                     bat '''
-                        set DOCKER_CONFIG=%WORKSPACE%\\.docker
+                        if exist "%DOCKER_CONFIG%" rmdir /s /q "%DOCKER_CONFIG%"
+                        mkdir "%DOCKER_CONFIG%"
 
-                        if exist "%WORKSPACE%\\.docker" (
-                            rmdir /s /q "%WORKSPACE%\\.docker"
-                        )
+                        powershell -NoProfile -Command ^
+                          "$auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($env:DOCKER_USER + ':' + $env:DOCKER_PASS));" ^
+                          "$json = '{\\\"auths\\\":{\\\"https://index.docker.io/v1/\\\":{\\\"auth\\\":\\\"' + $auth + '\\\"}}}';" ^
+                          "Set-Content -Path '%DOCKER_CONFIG%\\config.json' -Value $json -Encoding ASCII"
 
-                        mkdir "%WORKSPACE%\\.docker"
-
-                        powershell -NoProfile -Command "$auth=[Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($env:DOCKER_USER + ':' + $env:DOCKER_PASS)); $json='{\\\"auths\\\":{\\\"https://index.docker.io/v1/\\\":{\\\"auth\\\":\\\"' + $auth + '\\\"}}}'; Set-Content -Path ($env:DOCKER_CONFIG + '\\config.json') -Value $json -Encoding ASCII"
-
-                        docker push %DOCKER_IMAGE%:%BUILD_NUMBER%
-
-                        docker push %DOCKER_IMAGE%:latest
-
-                        del /f /q "%WORKSPACE%\\.docker\\config.json"
+                        docker push %DOCKER_IMAGE%:%DOCKER_TAG%
+                        docker push %DOCKER_IMAGE%:%DOCKER_LATEST%
                     '''
                 }
             }
@@ -176,7 +199,7 @@ pipeline {
                 ]) {
                     dir('terraform') {
                         bat '''
-                            terraform init -input=false
+                            terraform init
                         '''
                     }
                 }
@@ -253,10 +276,9 @@ pipeline {
                             echo ==========================================
                             echo FORCING EC2 INSTANCE TYPE: t3.micro
                             echo ==========================================
-                            echo.
 
                             terraform plan ^
-                              -var="instance_type=%EC2_INSTANCE_TYPE%" ^
+                              -var="instance_type=t3.micro" ^
                               -out=tfplan
                         '''
                     }
@@ -277,20 +299,27 @@ pipeline {
                     dir('terraform') {
                         bat '''
                             terraform apply -auto-approve tfplan
-
-                            terraform output -raw ec2_public_ip > ec2_ip.txt
                         '''
                     }
                 }
 
                 script {
-                    def ec2Host = readFile(
-                        file: 'terraform/ec2_ip.txt'
-                    ).trim()
+                    dir('terraform') {
+                        def ip = bat(
+                            script: 'terraform output -raw ec2_public_ip',
+                            returnStdout: true
+                        ).trim()
 
-                    env.EC2_HOST = ec2Host
+                        if (!ip || ip == 'null') {
+                            error("Terraform did not return a valid EC2 public IP. Got: '${ip}'")
+                        }
 
-                    echo "EC2 Public IP: ${env.EC2_HOST}"
+                        env.EC2_HOST = ip
+
+                        echo "=========================================="
+                        echo "EC2 Public IP: ${env.EC2_HOST}"
+                        echo "=========================================="
+                    }
                 }
             }
         }
@@ -301,38 +330,51 @@ pipeline {
                 echo ' STEP 14: WAIT FOR EC2 SSH'
                 echo '=========================================='
 
-                withCredentials([
-                    sshUserPrivateKey(
-                        credentialsId: 'cicd-key',
-                        keyFileVariable: 'SSH_KEY',
-                        usernameVariable: 'SSH_USERNAME'
-                    )
-                ]) {
-                    bat '''
-                        echo Waiting for EC2 SSH to become available...
+                script {
+                    if (!env.EC2_HOST?.trim()) {
+                        error('EC2_HOST is empty. Cannot connect to EC2.')
+                    }
 
-                        set "SSH_HOST=%EC2_HOST%"
+                    withCredentials([
+                        sshUserPrivateKey(
+                            credentialsId: 'cicd-key',
+                            keyFileVariable: 'SSH_KEY',
+                            usernameVariable: 'SSH_USER'
+                        )
+                    ]) {
 
-                        for /L %%i in (1,1,30) do (
-                            echo SSH attempt %%i/30
+                        bat """
+                            echo Waiting for SSH on %SSH_USER%@${env.EC2_HOST}...
 
-                            ssh -o StrictHostKeyChecking=no ^
-                                -o ConnectTimeout=5 ^
-                                -o BatchMode=yes ^
-                                -i "%SSH_KEY%" ^
-                                %SSH_USERNAME%@%SSH_HOST% "echo SSH_READY" >nul 2>&1
+                            set SSH_READY=0
 
-                            if not errorlevel 1 (
-                                echo SSH is ready.
-                                exit /b 0
+                            for /L %%i in (1,1,30) do (
+                                echo SSH attempt %%i of 30...
+
+                                ssh -i "%SSH_KEY%" ^
+                                  -o StrictHostKeyChecking=no ^
+                                  -o UserKnownHostsFile=NUL ^
+                                  -o ConnectTimeout=10 ^
+                                  %SSH_USER%@${env.EC2_HOST} "echo SSH_READY" > ssh-test.txt 2>&1
+
+                                if not errorlevel 1 (
+                                    echo SSH connection successful.
+                                    set SSH_READY=1
+                                    goto ssh_done
+                                )
+
+                                timeout /t 10 /nobreak >nul
                             )
 
-                            timeout /t 10 /nobreak >nul
-                        )
+                            :ssh_done
 
-                        echo SSH did not become ready within the expected time.
-                        exit /b 1
-                    '''
+                            if "%SSH_READY%"=="0" (
+                                echo SSH connection failed after 30 attempts.
+                                type ssh-test.txt
+                                exit /b 1
+                            )
+                        """
+                    }
                 }
             }
         }
@@ -340,43 +382,64 @@ pipeline {
         stage('Deploy') {
             steps {
                 echo '=========================================='
-                echo ' STEP 15: DEPLOY'
+                echo ' STEP 15: DEPLOY APPLICATION'
                 echo '=========================================='
 
-                withCredentials([
-                    sshUserPrivateKey(
-                        credentialsId: 'cicd-key',
-                        keyFileVariable: 'SSH_KEY',
-                        usernameVariable: 'SSH_USERNAME'
-                    ),
+                script {
+                    withCredentials([
+                        sshUserPrivateKey(
+                            credentialsId: 'cicd-key',
+                            keyFileVariable: 'SSH_KEY',
+                            usernameVariable: 'SSH_USER'
+                        ),
+                        usernamePassword(
+                            credentialsId: 'dockerhub-test',
+                            usernameVariable: 'DOCKER_USER',
+                            passwordVariable: 'DOCKER_PASS'
+                        )
+                    ]) {
 
-                    usernamePassword(
-                        credentialsId: 'dockerhub-test',
-                        usernameVariable: 'DOCKER_USER',
-                        passwordVariable: 'DOCKER_PASS'
-                    )
-                ]) {
-                    bat '''
-                        echo Deploying to EC2 host: %EC2_HOST%
+                        bat """
+                            echo Deploying to EC2: ${env.EC2_HOST}
 
-                        echo.
-                        echo Copying deployment script to EC2...
-                        echo.
+                            ssh -i "%SSH_KEY%" ^
+                              -o StrictHostKeyChecking=no ^
+                              -o UserKnownHostsFile=NUL ^
+                              %SSH_USER%@${env.EC2_HOST} ^
+                              "docker --version"
 
-                        scp -o StrictHostKeyChecking=no ^
-                            -i "%SSH_KEY%" ^
-                            scripts\\deploy.sh ^
-                            %SSH_USERNAME%@%EC2_HOST%:/tmp/deploy.sh
+                            ssh -i "%SSH_KEY%" ^
+                              -o StrictHostKeyChecking=no ^
+                              -o UserKnownHostsFile=NUL ^
+                              %SSH_USER%@${env.EC2_HOST} ^
+                              "echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin"
 
-                        echo.
-                        echo Running deployment on EC2...
-                        echo.
+                            ssh -i "%SSH_KEY%" ^
+                              -o StrictHostKeyChecking=no ^
+                              -o UserKnownHostsFile=NUL ^
+                              %SSH_USER%@${env.EC2_HOST} ^
+                              "docker pull %DOCKER_IMAGE%:%DOCKER_LATEST%"
 
-                        ssh -o StrictHostKeyChecking=no ^
-                            -i "%SSH_KEY%" ^
-                            %SSH_USERNAME%@%EC2_HOST% ^
-                            "chmod +x /tmp/deploy.sh && sudo /tmp/deploy.sh %DOCKER_IMAGE% %DOCKER_PASS%"
-                    '''
+                            ssh -i "%SSH_KEY%" ^
+                              -o StrictHostKeyChecking=no ^
+                              -o UserKnownHostsFile=NUL ^
+                              %SSH_USER%@${env.EC2_HOST} ^
+                              "docker rm -f cicd-demo-app 2> /dev/null || true"
+
+                            ssh -i "%SSH_KEY%" ^
+                              -o StrictHostKeyChecking=no ^
+                              -o UserKnownHostsFile=NUL ^
+                              %SSH_USER%@${env.EC2_HOST} ^
+                              "docker run -d --restart unless-stopped --name cicd-demo-app -p 5000:5000 %DOCKER_IMAGE%:%DOCKER_LATEST%"
+
+                            echo.
+                            echo ==========================================
+                            echo DEPLOYMENT COMPLETED
+                            echo Application URL:
+                            echo http://${env.EC2_HOST}:5000
+                            echo ==========================================
+                        """
+                    }
                 }
             }
         }
@@ -387,48 +450,62 @@ pipeline {
                 echo ' STEP 16: HEALTH CHECK'
                 echo '=========================================='
 
-                bat '''
-                    echo Checking application at:
-                    echo http://%EC2_HOST%:5000/
+                script {
+                    bat """
+                        echo Checking application:
+                        echo http://${env.EC2_HOST}:5000/
 
-                    powershell -NoProfile -Command "$url='http://%EC2_HOST%:5000/'; $response=Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 20; Write-Host ('HTTP Status: ' + $response.StatusCode); if ($response.StatusCode -ne 200) { exit 1 }"
-
-                    echo.
-                    echo ==========================================
-                    echo APPLICATION HEALTH CHECK PASSED
-                    echo ==========================================
-                '''
+                        powershell -NoProfile -Command ^
+                          "\$ok = \$false;" ^
+                          "for (\$i = 1; \$i -le 30; \$i++) {" ^
+                          "  try {" ^
+                          "    \$r = Invoke-WebRequest -Uri 'http://${env.EC2_HOST}:5000/' -UseBasicParsing -TimeoutSec 10;" ^
+                          "    if (\$r.StatusCode -eq 200) {" ^
+                          "      Write-Host 'HEALTH CHECK PASSED';" ^
+                          "      \$ok = \$true;" ^
+                          "      break;" ^
+                          "    }" ^
+                          "  } catch {" ^
+                          "    Write-Host ('Waiting for application... attempt ' + \$i);" ^
+                          "  }" ^
+                          "  Start-Sleep -Seconds 5;" ^
+                          "}" ^
+                          "if (-not \$ok) { Write-Host 'HEALTH CHECK FAILED'; exit 1 }"
+                    """
+                }
             }
         }
     }
 
     post {
+        always {
+            bat '''
+                if exist "%DOCKER_CONFIG%\\config.json" (
+                    del /f /q "%DOCKER_CONFIG%\\config.json"
+                )
+
+                if exist "%DOCKER_CONFIG%" (
+                    rmdir /s /q "%DOCKER_CONFIG%"
+                )
+            '''
+        }
+
         success {
-            echo ''
             echo '=========================================='
             echo ' CI/CD PIPELINE SUCCESSFUL'
             echo '=========================================='
-            echo "Docker Image: %DOCKER_IMAGE%:latest"
-            echo "EC2 Host: %EC2_HOST%"
-            echo "Application: http://%EC2_HOST%:5000/"
+            echo "Docker Image: ${DOCKER_IMAGE}:${DOCKER_TAG}"
+            echo "EC2 Host: ${EC2_HOST}"
+            echo "Application: http://${EC2_HOST}:5000"
             echo '=========================================='
         }
 
         failure {
-            echo ''
             echo '=========================================='
             echo ' CI/CD PIPELINE FAILED'
             echo '=========================================='
             echo 'Check the failed stage above.'
             echo '=========================================='
-        }
-
-        always {
-            bat '''
-                if exist "%WORKSPACE%\\.docker\\config.json" (
-                    del /f /q "%WORKSPACE%\\.docker\\config.json"
-                )
-            '''
         }
     }
 }
