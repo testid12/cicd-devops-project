@@ -145,7 +145,7 @@ pipeline {
             }
         }
 
-        stage('Terraform Import IAM Role') {
+        stage('Terraform Import IAM Resources') {
             steps {
                 withCredentials([
                     [$class: 'AmazonWebServicesCredentialsBinding',
@@ -160,6 +160,15 @@ pipeline {
                                 terraform import module.ec2.aws_iam_role.ec2_role cicd-devops-project-ec2-role
                             ) else (
                                 echo IAM role already exists in Terraform state. Skipping import.
+                            )
+
+                            terraform state list | findstr /c:"module.ec2.aws_iam_instance_profile.ec2_profile" >nul
+
+                            if errorlevel 1 (
+                                echo Importing existing IAM instance profile...
+                                terraform import module.ec2.aws_iam_instance_profile.ec2_profile cicd-devops-project-ec2-profile
+                            ) else (
+                                echo IAM instance profile already exists in Terraform state. Skipping import.
                             )
                         '''
                     }
