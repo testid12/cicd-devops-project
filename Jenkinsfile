@@ -2,10 +2,10 @@ pipeline {
     agent any
 
     environment {
-        DOCKERHUB_USERNAME = 'princeydv77'
-        DOCKER_IMAGE_NAME  = "${DOCKERHUB_USERNAME}/cicd-demo-app"
-        AWS_REGION         = 'ap-south-1'
-        EC2_SSH_USER       = 'ubuntu'
+        DOCKER_IMAGE = 'princeydv77/cicd-demo-app'
+        AWS_REGION = 'ap-south-1'
+        EC2_USER = 'ubuntu'
+        EC2_HOST = 'YOUR_EC2_PUBLIC_IP'
     }
 
     stages {
@@ -19,10 +19,11 @@ pipeline {
         stage('Setup Python') {
             steps {
                 bat '''
+                    if exist venv rmdir /s /q venv
                     python -m venv venv
                     call venv\\Scripts\\activate
                     python -m pip install --upgrade pip
-                    pip install flask gunicorn pytest flake8 pytest-cov
+                    pip install -r requirements.txt
                 '''
             }
         }
@@ -64,19 +65,19 @@ pipeline {
             }
         }
 
-        stage('Build Docker Image') {
+        stage('Security Scan') {
             steps {
                 bat '''
-                    docker build -t %DOCKER_IMAGE_NAME%:%BUILD_NUMBER% .
-                    docker tag %DOCKER_IMAGE_NAME%:%BUILD_NUMBER% %DOCKER_IMAGE_NAME%:latest
+                    trivy fs . --exit-code 0 --severity HIGH,CRITICAL --skip-dirs venv
                 '''
             }
         }
 
-        stage('Security Scan') {
+        stage('Docker Build') {
             steps {
                 bat '''
-                    trivy image --exit-code 0 --severity HIGH,CRITICAL %DOCKER_IMAGE_NAME%:%BUILD_NUMBER%
+                    docker build -t %DOCKER_IMAGE%:%BUILD_NUMBER% .
+                    docker tag %DOCKER_IMAGE%:%BUILD_NUMBER% %DOCKER_IMAGE%:latest
                 '''
             }
         }
@@ -93,12 +94,13 @@ pipeline {
                     bat '''
                         set DOCKER_CONFIG=%WORKSPACE%\\.docker
 
-                        if not exist "%DOCKER_CONFIG%" mkdir "%DOCKER_CONFIG%"
+                        if exist "%DOCKER_CONFIG%" rmdir /s /q "%DOCKER_CONFIG%"
+                        mkdir "%DOCKER_CONFIG%"
 
-                        powershell -NoProfile -Command "$auth=[Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($env:DOCKER_USER + ':' + $env:DOCKER_PASS)); $json='{\\\"auths\\\":{\\\"https://index.docker.io/v1/\\\":{\\\"auth\\\":\\\"' + $auth + '\\\"}}}'; Set-Content -Path ($env:DOCKER_CONFIG + '\\config.json') -Value $json -Encoding ascii"
+                        powershell -NoProfile -Command "$auth=[Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($env:DOCKER_USER + ':' + $env:DOCKER_PASS)); $json='{\\\"auths\\\":{\\\"https://index.docker.io/v1/\\\":{\\\"auth\\\":\\\"' + $auth + '\\\"}}}'; Set-Content -Path ($env:DOCKER_CONFIG + '\\config.json') -Value $json -Encoding ASCII"
 
-                        docker push %DOCKER_IMAGE_NAME%:%BUILD_NUMBER%
-                        docker push %DOCKER_IMAGE_NAME%:latest
+                        docker push %DOCKER_IMAGE%:%BUILD_NUMBER%
+                        docker push %DOCKER_IMAGE%:latest
 
                         del /f /q "%DOCKER_CONFIG%\\config.json"
                     '''
@@ -106,43 +108,27 @@ pipeline {
             }
         }
 
-        stage('Terraform Init') {
-            steps {
-                withCredentials([
-                    [
-                        $class: 'AmazonWebServicesCredentialsBinding',
-                        credentialsId: 'aws-creds'
-                    ]
-                ]) {
-                    bat '''
-                        cd terraform
-                        terraform init -input=false
-                    '''
-                }
-            }
-        }
-
         stage('Terraform Validate') {
             steps {
-                bat '''
-                    cd terraform
-                    terraform validate
-                '''
+                dir('terraform') {
+                    bat '''
+                        terraform validate
+                    '''
+                }
             }
         }
 
         stage('Terraform Plan') {
             steps {
                 withCredentials([
-                    [
-                        $class: 'AmazonWebServicesCredentialsBinding',
-                        credentialsId: 'aws-creds'
-                    ]
+                    [$class: 'AmazonWebServicesCredentialsBinding',
+                     credentialsId: 'aws-creds']
                 ]) {
-                    bat '''
-                        cd terraform
-                        terraform plan -input=false -out=tfplan
-                    '''
+                    dir('terraform') {
+                        bat '''
+                            terraform plan -var-file=terraform.tfvars
+                        '''
+                    }
                 }
             }
         }
@@ -150,15 +136,14 @@ pipeline {
         stage('Terraform Apply') {
             steps {
                 withCredentials([
-                    [
-                        $class: 'AmazonWebServicesCredentialsBinding',
-                        credentialsId: 'aws-creds'
-                    ]
+                    [$class: 'AmazonWebServicesCredentialsBinding',
+                     credentialsId: 'aws-creds']
                 ]) {
-                    bat '''
-                        cd terraform
-                        terraform apply -input=false -auto-approve tfplan
-                    '''
+                    dir('terraform') {
+                        bat '''
+                            terraform apply -auto-approve -var-file=terraform.tfvars
+                        '''
+                    }
                 }
             }
         }
@@ -166,6 +151,11 @@ pipeline {
         stage('Deploy') {
             steps {
                 withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub-test',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    ),
                     sshUserPrivateKey(
                         credentialsId: 'cicd-key',
                         keyFileVariable: 'SSH_KEY',
@@ -173,11 +163,14 @@ pipeline {
                     )
                 ]) {
                     bat '''
-                        cd terraform
+                        echo Deploying application...
 
-                        for /f "delims=" %%i in ('terraform output -raw instance_public_ip') do set EC2_IP=%%i
+                        REM Replace YOUR_EC2_PUBLIC_IP in the environment section
+                        REM with the actual Terraform-created EC2 public IP.
 
-                        ssh -o StrictHostKeyChecking=no -i "%SSH_KEY%" %SSH_USER%@%EC2_IP% "docker pull %DOCKER_IMAGE_NAME%:latest && docker stop cicd-demo-app || true && docker rm cicd-demo-app || true && docker run -d --name cicd-demo-app -p 80:5000 %DOCKER_IMAGE_NAME%:latest"
+                        scp -i "%SSH_KEY%" -o StrictHostKeyChecking=no docker-compose.yml %SSH_USER%@%EC2_HOST%:/home/%SSH_USER%/
+
+                        ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%EC2_HOST% "docker login -u %DOCKER_USER% -p %DOCKER_PASS% && docker pull %DOCKER_IMAGE%:latest && docker stop cicd-demo-app 2>nul || true && docker rm cicd-demo-app 2>nul || true && docker run -d --name cicd-demo-app -p 5000:5000 %DOCKER_IMAGE%:latest"
                     '''
                 }
             }
@@ -186,11 +179,12 @@ pipeline {
         stage('Health Check') {
             steps {
                 bat '''
-                    cd terraform
+                    echo Waiting for application to start...
+                    timeout /t 15 /nobreak
 
-                    for /f "delims=" %%i in ('terraform output -raw instance_public_ip') do set EC2_IP=%%i
+                    curl.exe -f http://%EC2_HOST%:5000/ || exit /b 1
 
-                    powershell -NoProfile -Command "$response=Invoke-WebRequest -Uri ('http://' + $env:EC2_IP) -UseBasicParsing -TimeoutSec 30; if ($response.StatusCode -eq 200) { Write-Host 'Application is UP' } else { exit 1 }"
+                    echo Application is healthy!
                 '''
             }
         }
@@ -198,16 +192,16 @@ pipeline {
 
     post {
         success {
-            echo 'CI/CD Pipeline completed successfully!'
+            echo '=========================================='
+            echo ' CI/CD PIPELINE COMPLETED SUCCESSFULLY'
+            echo '=========================================='
         }
 
         failure {
-            echo 'CI/CD Pipeline failed!'
-        }
-
-        always {
-            echo "Build Number: ${BUILD_NUMBER}"
-            echo "Docker Image: ${DOCKER_IMAGE_NAME}:${BUILD_NUMBER}"
+            echo '=========================================='
+            echo ' CI/CD PIPELINE FAILED'
+            echo ' Check the failed stage above'
+            echo '=========================================='
         }
     }
 }
