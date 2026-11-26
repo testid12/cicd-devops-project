@@ -3,8 +3,8 @@ pipeline {
 
     environment {
         DOCKER_IMAGE = 'princeydv77/cicd-demo-app'
-        AWS_REGION = 'ap-south-1'
         EC2_INSTANCE_TYPE = 't3.micro'
+        EC2_HOST = ''
     }
 
     stages {
@@ -14,7 +14,6 @@ pipeline {
                 echo '=========================================='
                 echo ' STEP 1: CHECKOUT'
                 echo '=========================================='
-
                 checkout scm
             }
         }
@@ -83,14 +82,14 @@ pipeline {
                 ]) {
                     bat '''
                         sonar-scanner ^
-                          -Dsonar.projectKey=cicd-devops-project ^
-                          -Dsonar.projectName=cicd-devops-project ^
-                          -Dsonar.sources=app ^
-                          -Dsonar.tests=app/tests ^
-                          -Dsonar.exclusions=app/tests/** ^
-                          -Dsonar.test.inclusions=app/tests/** ^
-                          -Dsonar.host.url=http://localhost:9000 ^
-                          -Dsonar.token=%SONAR_TOKEN%
+                            -Dsonar.projectKey=cicd-devops-project ^
+                            -Dsonar.projectName=cicd-devops-project ^
+                            -Dsonar.sources=app ^
+                            -Dsonar.tests=app/tests ^
+                            -Dsonar.exclusions=app/tests/** ^
+                            -Dsonar.test.inclusions=app/tests/** ^
+                            -Dsonar.host.url=http://localhost:9000 ^
+                            -Dsonar.token=%SONAR_TOKEN%
                     '''
                 }
             }
@@ -115,7 +114,12 @@ pipeline {
                 echo '=========================================='
 
                 bat '''
-                    docker build -t %DOCKER_IMAGE%:%BUILD_NUMBER% .
+                    docker build ^
+                        --build-arg APP_VERSION=1.0 ^
+                        --build-arg BUILD_NUMBER=%BUILD_NUMBER% ^
+                        --build-arg GIT_COMMIT=%GIT_COMMIT% ^
+                        -t %DOCKER_IMAGE%:%BUILD_NUMBER% .
+
                     docker tag %DOCKER_IMAGE%:%BUILD_NUMBER% %DOCKER_IMAGE%:latest
                 '''
             }
@@ -163,9 +167,7 @@ pipeline {
                      credentialsId: 'aws-creds']
                 ]) {
                     dir('terraform') {
-                        bat '''
-                            terraform init
-                        '''
+                        bat 'terraform init'
                     }
                 }
             }
@@ -182,9 +184,7 @@ pipeline {
                      credentialsId: 'aws-creds']
                 ]) {
                     dir('terraform') {
-                        bat '''
-                            terraform validate
-                        '''
+                        bat 'terraform validate'
                     }
                 }
             }
@@ -203,6 +203,7 @@ pipeline {
                     dir('terraform') {
                         bat '''
                             terraform state list | findstr /c:"module.ec2.aws_iam_role.ec2_role" >nul
+
                             if errorlevel 1 (
                                 echo Importing existing IAM role...
                                 terraform import module.ec2.aws_iam_role.ec2_role cicd-devops-project-ec2-role
@@ -211,6 +212,7 @@ pipeline {
                             )
 
                             terraform state list | findstr /c:"module.ec2.aws_iam_instance_profile.ec2_profile" >nul
+
                             if errorlevel 1 (
                                 echo Importing existing IAM instance profile...
                                 terraform import module.ec2.aws_iam_instance_profile.ec2_profile cicd-devops-project-ec2-profile
@@ -264,7 +266,7 @@ pipeline {
                     def ip = readFile('terraform/ec2_public_ip.txt').trim()
 
                     if (!ip || ip == 'null' || ip == '0.0.0.0') {
-                        error("EC2 public IP could not be retrieved from Terraform.")
+                        error("EC2 Public IP is invalid: '${ip}'")
                     }
 
                     env.EC2_HOST = ip
@@ -293,13 +295,31 @@ pipeline {
                         setlocal EnableDelayedExpansion
 
                         set "SSH_OK=0"
+                        set "SSH_KEY_COPY=%WORKSPACE%\\cicd-key-jenkins.pem"
+
+                        echo Preparing SSH private key...
+
+                        copy /Y "%SSH_KEY%" "%SSH_KEY_COPY%" >nul
+
+                        if errorlevel 1 (
+                            echo Failed to copy SSH private key.
+                            exit /b 1
+                        )
+
+                        echo Removing inherited permissions...
+
+                        icacls "%SSH_KEY_COPY%" /inheritance:r
+                        icacls "%SSH_KEY_COPY%" /grant:r "%USERNAME%:R"
+
+                        echo Testing SSH connection...
 
                         for /L %%i in (1,1,12) do (
                             echo Waiting for SSH... attempt %%i/12
 
-                            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "%SSH_KEY%" %SSH_USER%@%EC2_HOST% "echo SSH_READY" > ssh_test.txt 2>&1
+                            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "%SSH_KEY_COPY%" %SSH_USER%@%EC2_HOST% "echo SSH_READY" >ssh_test.txt 2>&1
 
                             findstr /c:"SSH_READY" ssh_test.txt >nul
+
                             if not errorlevel 1 (
                                 echo SSH connection successful.
                                 set "SSH_OK=1"
@@ -311,13 +331,14 @@ pipeline {
 
                         :ssh_success
 
-                        if "!SSH_OK!"=="0" (
+                        if "!SSH_OK!" == "0" (
                             echo SSH connection failed after 12 attempts.
                             type ssh_test.txt
+                            del /f /q "%SSH_KEY_COPY%" >nul 2>&1
                             exit /b 1
                         )
 
-                        endlocal
+                        del /f /q "%SSH_KEY_COPY%" >nul 2>&1
                     '''
                 }
             }
@@ -330,19 +351,37 @@ pipeline {
                 echo '=========================================='
 
                 withCredentials([
-                    sshUserPrivateKey(
-                        credentialsId: 'cicd-key',
-                        keyFileVariable: 'SSH_KEY',
-                        usernameVariable: 'SSH_USER'
-                    ),
                     usernamePassword(
                         credentialsId: 'dockerhub-test',
                         usernameVariable: 'DOCKER_USER',
                         passwordVariable: 'DOCKER_PASS'
+                    ),
+                    sshUserPrivateKey(
+                        credentialsId: 'cicd-key',
+                        keyFileVariable: 'SSH_KEY',
+                        usernameVariable: 'SSH_USER'
                     )
                 ]) {
                     bat '''
-                        ssh -o StrictHostKeyChecking=no -i "%SSH_KEY%" %SSH_USER%@%EC2_HOST% "echo '%DOCKER_PASS%' | docker login -u '%DOCKER_USER%' --password-stdin && docker pull %DOCKER_IMAGE%:latest && docker rm -f cicd-demo-app 2>/dev/null || true && docker run -d --restart unless-stopped --name cicd-demo-app -p 5000:5000 %DOCKER_IMAGE%:latest"
+                        set "SSH_KEY_COPY=%WORKSPACE%\\cicd-key-deploy.pem"
+
+                        copy /Y "%SSH_KEY%" "%SSH_KEY_COPY%" >nul
+                        if errorlevel 1 (
+                            echo Failed to copy SSH private key for deployment.
+                            exit /b 1
+                        )
+
+                        icacls "%SSH_KEY_COPY%" /inheritance:r
+                        icacls "%SSH_KEY_COPY%" /grant:r "%USERNAME%:R"
+
+                        ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "%SSH_KEY_COPY%" %SSH_USER%@%EC2_HOST% "echo '%DOCKER_PASS%' | docker login -u '%DOCKER_USER%' --password-stdin && docker pull %DOCKER_IMAGE%:latest && docker rm -f cicd-demo-app 2>/dev/null || true && docker run -d --name cicd-demo-app --restart unless-stopped -p 5000:5000 %DOCKER_IMAGE%:latest"
+
+                        if errorlevel 1 (
+                            del /f /q "%SSH_KEY_COPY%" >nul 2>&1
+                            exit /b 1
+                        )
+
+                        del /f /q "%SSH_KEY_COPY%" >nul 2>&1
                     '''
                 }
             }
@@ -354,17 +393,9 @@ pipeline {
                 echo ' STEP 16: HEALTH CHECK'
                 echo '=========================================='
 
-                withCredentials([
-                    sshUserPrivateKey(
-                        credentialsId: 'cicd-key',
-                        keyFileVariable: 'SSH_KEY',
-                        usernameVariable: 'SSH_USER'
-                    )
-                ]) {
-                    bat '''
-                        powershell -NoProfile -Command "$url = 'http://%EC2_HOST%:5000/health'; for ($i = 1; $i -le 12; $i++) { try { $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 10; if ($r.StatusCode -eq 200) { Write-Host 'Health check successful'; exit 0 } } catch { Write-Host ('Health check attempt ' + $i + ' failed') }; Start-Sleep -Seconds 10 }; Write-Host 'Health check failed'; exit 1"
-                    '''
-                }
+                bat '''
+                    powershell -NoProfile -Command "$url = 'http://%EC2_HOST%:5000/health'; $success = $false; for ($i = 1; $i -le 12; $i++) { Write-Host ('Health check attempt ' + $i + '/12'); try { $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 10; if ($response.StatusCode -eq 200) { Write-Host 'Application health check successful.'; $success = $true; break } } catch { Write-Host ('Health check failed: ' + $_.Exception.Message) }; Start-Sleep -Seconds 10 }; if (-not $success) { Write-Error 'Application health check failed after 12 attempts.'; exit 1 }"
+                '''
             }
         }
     }
@@ -379,6 +410,14 @@ pipeline {
                 if exist "%WORKSPACE%\\.docker" (
                     rmdir /s /q "%WORKSPACE%\\.docker"
                 )
+
+                if exist "%WORKSPACE%\\cicd-key-jenkins.pem" (
+                    del /f /q "%WORKSPACE%\\cicd-key-jenkins.pem"
+                )
+
+                if exist "%WORKSPACE%\\cicd-key-deploy.pem" (
+                    del /f /q "%WORKSPACE%\\cicd-key-deploy.pem"
+                )
             '''
         }
 
@@ -386,7 +425,7 @@ pipeline {
             echo '=========================================='
             echo ' CI/CD PIPELINE SUCCESSFUL'
             echo '=========================================='
-            echo "Application URL: http://${env.EC2_HOST}:5000"
+            echo "Application URL: http://${EC2_HOST}:5000"
             echo '=========================================='
         }
 
