@@ -47,14 +47,18 @@ pipeline {
 
         stage('SonarQube Analysis') {
             steps {
-                withSonarQubeEnv('sonarqube') {
+                withCredentials([
+                    string(
+                        credentialsId: 'sonarqube-token',
+                        variable: 'SONAR_TOKEN'
+                    )
+                ]) {
                     bat '''
-                        call venv\\Scripts\\activate
                         sonar-scanner ^
                           -Dsonar.projectKey=cicd-devops-project ^
                           -Dsonar.sources=. ^
-                          -Dsonar.host.url=%SONAR_HOST_URL% ^
-                          -Dsonar.token=%SONAR_AUTH_TOKEN%
+                          -Dsonar.host.url=http://localhost:9000 ^
+                          -Dsonar.token=%SONAR_TOKEN%
                     '''
                 }
             }
