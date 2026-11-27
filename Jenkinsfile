@@ -420,7 +420,7 @@ exit /b 1
             }
         }
 
-      stage('Health Check') {
+     stage('Health Check') {
     steps {
         echo '=========================================='
         echo ' STEP 16: HEALTH CHECK'
