@@ -260,25 +260,24 @@ pipeline {
                         bat '''
                             terraform apply -auto-approve tfplan
                         '''
+                    }
+                }
 
-                        bat '''
-                            terraform output -raw ec2_public_ip > ec2_public_ip.txt
-                        '''
+                script {
+                    def ip = bat(
+                        script: 'cd terraform && terraform output -raw ec2_public_ip',
+                        returnStdout: true
+                    ).trim()
+
+                    if (!ip || ip == 'null' || ip == '0.0.0.0') {
+                        error("Failed to get valid EC2 Public IP. Terraform returned: '${ip}'")
                     }
 
-                    script {
-                        def ip = readFile('terraform/ec2_public_ip.txt').trim()
+                    env.EC2_HOST = ip
 
-                        if (!ip || ip == 'null' || ip == '0.0.0.0') {
-                            error("Terraform returned invalid EC2 public IP: ${ip}")
-                        }
-
-                        env.EC2_HOST = ip
-
-                        echo '=========================================='
-                        echo "EC2 Public IP: ${env.EC2_HOST}"
-                        echo '=========================================='
-                    }
+                    echo '=========================================='
+                    echo "EC2 Public IP: ${env.EC2_HOST}"
+                    echo '=========================================='
                 }
             }
         }
@@ -297,14 +296,43 @@ pipeline {
                     )
                 ]) {
                     bat '''
+                        setlocal EnableDelayedExpansion
+
+                        echo EC2_HOST=%EC2_HOST%
+
+                        if "%EC2_HOST%"=="" (
+                            echo ERROR: EC2_HOST is empty.
+                            exit /b 1
+                        )
+
+                        if "%EC2_HOST%"=="null" (
+                            echo ERROR: EC2_HOST is null.
+                            exit /b 1
+                        )
+
                         echo Copying SSH private key...
-                        copy /Y "%SSH_KEY%" "%WORKSPACE%\\cicd-key-jenkins.pem"
+
+                        set "SSH_KEY_COPY=%WORKSPACE%\\cicd-key-jenkins.pem"
+
+                        copy /Y "%SSH_KEY%" "!SSH_KEY_COPY!" >nul
+
+                        if errorlevel 1 (
+                            echo Failed to copy SSH private key.
+                            exit /b 1
+                        )
 
                         echo Removing inherited permissions...
-                        icacls "%WORKSPACE%\\cicd-key-jenkins.pem" /inheritance:r
+
+                        icacls "!SSH_KEY_COPY!" /inheritance:r
+
+                        if errorlevel 1 (
+                            echo Failed to remove inherited permissions.
+                            exit /b 1
+                        )
 
                         echo Granting SYSTEM read permission...
-                        icacls "%WORKSPACE%\\cicd-key-jenkins.pem" /grant:r "SYSTEM:R"
+
+                        icacls "!SSH_KEY_COPY!" /grant:r "SYSTEM:R"
 
                         if errorlevel 1 (
                             echo Failed to set SSH key permissions.
@@ -316,7 +344,7 @@ pipeline {
                         for /L %%i in (1,1,12) do (
                             echo Waiting for SSH... attempt %%i/12
 
-                            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "%WORKSPACE%\\cicd-key-jenkins.pem" %SSH_USER%@%EC2_HOST% "echo SSH_READY" > ssh_test.txt 2>&1
+                            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "!SSH_KEY_COPY!" %SSH_USER%@%EC2_HOST% "echo SSH_READY" >ssh_test.txt 2>&1
 
                             findstr /c:"SSH_READY" ssh_test.txt >nul
 
@@ -328,12 +356,15 @@ pipeline {
                             timeout /t 10 /nobreak >nul
                         )
 
-                        echo SSH connection failed after 12 attempts.
+                        echo ERROR: SSH connection failed after 12 attempts.
                         type ssh_test.txt
                         exit /b 1
 
                         :ssh_success
-                        echo SSH is ready.
+                        echo ==========================================
+                        echo SSH IS READY
+                        echo EC2 HOST: %EC2_HOST%
+                        echo ==========================================
                     '''
                 }
             }
@@ -358,10 +389,31 @@ pipeline {
                     )
                 ]) {
                     bat '''
-                        copy /Y "%SSH_KEY%" "%WORKSPACE%\\cicd-key-deploy.pem"
+                        setlocal EnableDelayedExpansion
 
-                        icacls "%WORKSPACE%\\cicd-key-deploy.pem" /inheritance:r
-                        icacls "%WORKSPACE%\\cicd-key-deploy.pem" /grant:r "SYSTEM:R"
+                        echo EC2_HOST=%EC2_HOST%
+
+                        if "%EC2_HOST%"=="" (
+                            echo ERROR: EC2_HOST is empty.
+                            exit /b 1
+                        )
+
+                        if "%EC2_HOST%"=="null" (
+                            echo ERROR: EC2_HOST is null.
+                            exit /b 1
+                        )
+
+                        set "SSH_KEY_COPY=%WORKSPACE%\\cicd-key-deploy.pem"
+
+                        copy /Y "%SSH_KEY%" "!SSH_KEY_COPY!" >nul
+
+                        if errorlevel 1 (
+                            echo Failed to copy deployment SSH key.
+                            exit /b 1
+                        )
+
+                        icacls "!SSH_KEY_COPY!" /inheritance:r
+                        icacls "!SSH_KEY_COPY!" /grant:r "SYSTEM:R"
 
                         if errorlevel 1 (
                             echo Failed to set deployment SSH key permissions.
@@ -370,7 +422,7 @@ pipeline {
 
                         echo Deploying to %EC2_HOST%...
 
-                        ssh -o StrictHostKeyChecking=no -i "%WORKSPACE%\\cicd-key-deploy.pem" %SSH_USER%@%EC2_HOST% "echo '%DOCKER_PASS%' | docker login -u '%DOCKER_USER%' --password-stdin && docker pull %DOCKER_IMAGE%:%BUILD_NUMBER% && docker rm -f cicd-demo-app 2>/dev/null || true && docker run -d --name cicd-demo-app --restart unless-stopped -p 5000:5000 %DOCKER_IMAGE%:%BUILD_NUMBER%"
+                        ssh -o StrictHostKeyChecking=no -i "!SSH_KEY_COPY!" %SSH_USER%@%EC2_HOST% "echo '%DOCKER_PASS%' | docker login -u '%DOCKER_USER%' --password-stdin && docker pull %DOCKER_IMAGE%:%BUILD_NUMBER% && docker rm -f cicd-demo-app 2>/dev/null || true && docker run -d --name cicd-demo-app --restart unless-stopped -p 5000:5000 %DOCKER_IMAGE%:%BUILD_NUMBER%"
                     '''
                 }
             }
