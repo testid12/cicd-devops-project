@@ -80,10 +80,10 @@ pipeline {
             }
         }
 
-        stage('SonarQube Analysis') {
+        stage('SonarQube') {
             steps {
                 echo '=========================================='
-                echo ' STEP 5: SONARQUBE ANALYSIS'
+                echo ' STEP 5: SONARQUBE'
                 echo '=========================================='
 
                 withCredentials([
@@ -94,14 +94,13 @@ pipeline {
                 ]) {
                     bat '''
                         sonar-scanner ^
-                            -Dsonar.projectKey=cicd-devops-project ^
-                            -Dsonar.projectName=cicd-devops-project ^
-                            -Dsonar.sources=app ^
-                            -Dsonar.tests=app/tests ^
-                            -Dsonar.exclusions=app/tests/** ^
-                            -Dsonar.test.inclusions=app/tests/** ^
-                            -Dsonar.host.url=http://localhost:9000 ^
-                            -Dsonar.token=%SONAR_TOKEN%
+                          -Dsonar.projectKey=cicd-devops-project ^
+                          -Dsonar.sources=app ^
+                          -Dsonar.tests=app/tests ^
+                          -Dsonar.exclusions=app/tests/** ^
+                          -Dsonar.test.inclusions=app/tests/** ^
+                          -Dsonar.host.url=http://localhost:9000 ^
+                          -Dsonar.token=%SONAR_TOKEN%
                     '''
                 }
             }
@@ -110,11 +109,11 @@ pipeline {
         stage('Security Scan') {
             steps {
                 echo '=========================================='
-                echo ' STEP 6: TRIVY SECURITY SCAN'
+                echo ' STEP 6: SECURITY SCAN'
                 echo '=========================================='
 
                 bat '''
-                    trivy fs . --exit-code 0 --severity HIGH,CRITICAL
+                    trivy fs --scanners vuln,secret .
                 '''
             }
         }
@@ -175,7 +174,7 @@ pipeline {
                 ]) {
                     dir('terraform') {
                         bat '''
-                            terraform init -input=false
+                            terraform init
                         '''
                     }
                 }
@@ -239,7 +238,9 @@ pipeline {
                 ]) {
                     dir('terraform') {
                         bat '''
-                            terraform plan -var="instance_type=%EC2_INSTANCE_TYPE%" -out=tfplan
+                            terraform plan ^
+                              -var="instance_type=%EC2_INSTANCE_TYPE%" ^
+                              -out=tfplan
                         '''
                     }
                 }
@@ -259,25 +260,38 @@ pipeline {
                     dir('terraform') {
                         bat '''
                             terraform apply -auto-approve tfplan
+
+                            terraform output -raw ec2_public_ip > ec2_public_ip.txt
+
+                            echo.
+                            echo ===== EC2 IP FROM TERRAFORM =====
+                            type ec2_public_ip.txt
+                            echo ================================
                         '''
                     }
                 }
 
                 script {
-                    def ip = bat(
-                        script: 'cd terraform && terraform output -raw ec2_public_ip',
-                        returnStdout: true
-                    ).trim()
+                    def ipFile = 'terraform/ec2_public_ip.txt'
 
-                    if (!ip || ip == 'null' || ip == '0.0.0.0') {
-                        error("Failed to get valid EC2 Public IP. Terraform returned: '${ip}'")
+                    if (!fileExists(ipFile)) {
+                        error("ERROR: Terraform IP file was not created: ${ipFile}")
+                    }
+
+                    def ip = readFile(ipFile).trim()
+
+                    echo '=========================================='
+                    echo "EC2 Public IP read from file: ${ip}"
+                    echo '=========================================='
+
+                    if (!ip ||
+                        ip == 'null' ||
+                        ip == '0.0.0.0' ||
+                        !ip.matches(/^\\d{1,3}(\\.\\d{1,3}){3}$/)) {
+                        error("ERROR: Invalid EC2 Public IP received from Terraform: '${ip}'")
                     }
 
                     env.EC2_HOST = ip
-
-                    echo '=========================================='
-                    echo "EC2 Public IP: ${env.EC2_HOST}"
-                    echo '=========================================='
                 }
             }
         }
@@ -288,84 +302,78 @@ pipeline {
                 echo ' STEP 14: WAIT FOR SSH'
                 echo '=========================================='
 
-                withCredentials([
-                    sshUserPrivateKey(
-                        credentialsId: 'cicd-key',
-                        keyFileVariable: 'SSH_KEY',
-                        usernameVariable: 'SSH_USER'
-                    )
-                ]) {
-                    bat '''
-                        setlocal EnableDelayedExpansion
+                script {
+                    def ec2Host = readFile('terraform/ec2_public_ip.txt').trim()
 
-                        echo EC2_HOST=%EC2_HOST%
+                    echo '=========================================='
+                    echo "SSH target EC2 IP: ${ec2Host}"
+                    echo '=========================================='
 
-                        if "%EC2_HOST%"=="" (
-                            echo ERROR: EC2_HOST is empty.
-                            exit /b 1
+                    if (!ec2Host ||
+                        ec2Host == 'null' ||
+                        !ec2Host.matches(/^\\d{1,3}(\\.\\d{1,3}){3}$/)) {
+                        error("ERROR: Invalid EC2 IP for SSH: '${ec2Host}'")
+                    }
+
+                    withCredentials([
+                        sshUserPrivateKey(
+                            credentialsId: 'cicd-key',
+                            keyFileVariable: 'SSH_KEY',
+                            usernameVariable: 'SSH_USER'
                         )
+                    ]) {
+                        bat """
+                            setlocal EnableDelayedExpansion
 
-                        if "%EC2_HOST%"=="null" (
-                            echo ERROR: EC2_HOST is null.
-                            exit /b 1
-                        )
+                            echo SSH_USER=%SSH_USER%
+                            echo EC2_HOST=${ec2Host}
 
-                        echo Copying SSH private key...
-
-                        set "SSH_KEY_COPY=%WORKSPACE%\\cicd-key-jenkins.pem"
-
-                        copy /Y "%SSH_KEY%" "!SSH_KEY_COPY!" >nul
-
-                        if errorlevel 1 (
-                            echo Failed to copy SSH private key.
-                            exit /b 1
-                        )
-
-                        echo Removing inherited permissions...
-
-                        icacls "!SSH_KEY_COPY!" /inheritance:r
-
-                        if errorlevel 1 (
-                            echo Failed to remove inherited permissions.
-                            exit /b 1
-                        )
-
-                        echo Granting SYSTEM read permission...
-
-                        icacls "!SSH_KEY_COPY!" /grant:r "SYSTEM:R"
-
-                        if errorlevel 1 (
-                            echo Failed to set SSH key permissions.
-                            exit /b 1
-                        )
-
-                        echo Testing SSH connection to %EC2_HOST%...
-
-                        for /L %%i in (1,1,12) do (
-                            echo Waiting for SSH... attempt %%i/12
-
-                            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "!SSH_KEY_COPY!" %SSH_USER%@%EC2_HOST% "echo SSH_READY" >ssh_test.txt 2>&1
-
-                            findstr /c:"SSH_READY" ssh_test.txt >nul
-
-                            if not errorlevel 1 (
-                                echo SSH connection successful.
-                                goto :ssh_success
+                            if not exist "%WORKSPACE%\\\\cicd-key-ssh.pem" (
+                                copy /Y "%SSH_KEY%" "%WORKSPACE%\\\\cicd-key-ssh.pem"
                             )
 
-                            timeout /t 10 /nobreak >nul
-                        )
+                            icacls "%WORKSPACE%\\\\cicd-key-ssh.pem" /inheritance:r
+                            icacls "%WORKSPACE%\\\\cicd-key-ssh.pem" /grant:r "SYSTEM:R"
 
-                        echo ERROR: SSH connection failed after 12 attempts.
-                        type ssh_test.txt
-                        exit /b 1
+                            if errorlevel 1 (
+                                echo ERROR: Failed to set SSH key permissions.
+                                exit /b 1
+                            )
 
-                        :ssh_success
-                        echo ==========================================
-                        echo SSH IS READY
-                        echo EC2 HOST: %EC2_HOST%
-                        echo ==========================================
-                    '''
+                            set "SSH_HOST=${ec2Host}"
+
+                            set "SSH_OK=0"
+
+                            for /L %%i in (1,1,12) do (
+                                echo.
+                                echo ===== SSH ATTEMPT %%i/12 =====
+
+                                ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes -i "%WORKSPACE%\\\\cicd-key-ssh.pem" %SSH_USER%@%SSH_HOST% "echo SSH connection successful"
+
+                                if not errorlevel 1 (
+                                    set "SSH_OK=1"
+                                    goto :ssh_success
+                                )
+
+                                echo SSH not ready yet. Waiting 10 seconds...
+                                timeout /t 10 /nobreak >nul
+                            )
+
+                            :ssh_success
+
+                            if "!SSH_OK!"=="1" (
+                                echo.
+                                echo ==========================================
+                                echo SSH CONNECTION SUCCESSFUL
+                                echo ==========================================
+                                exit /b 0
+                            )
+
+                            echo.
+                            echo ERROR: Could not connect to EC2 through SSH.
+                            exit /b 1
+                        """
+                    }
                 }
             }
         }
@@ -373,57 +381,58 @@ pipeline {
         stage('Deploy') {
             steps {
                 echo '=========================================='
-                echo ' STEP 15: DEPLOY TO EC2'
+                echo ' STEP 15: DEPLOY'
                 echo '=========================================='
 
-                withCredentials([
-                    usernamePassword(
-                        credentialsId: 'dockerhub-test',
-                        usernameVariable: 'DOCKER_USER',
-                        passwordVariable: 'DOCKER_PASS'
-                    ),
-                    sshUserPrivateKey(
-                        credentialsId: 'cicd-key',
-                        keyFileVariable: 'SSH_KEY',
-                        usernameVariable: 'SSH_USER'
-                    )
-                ]) {
-                    bat '''
-                        setlocal EnableDelayedExpansion
+                script {
+                    def ec2Host = readFile('terraform/ec2_public_ip.txt').trim()
 
-                        echo EC2_HOST=%EC2_HOST%
+                    if (!ec2Host ||
+                        ec2Host == 'null' ||
+                        !ec2Host.matches(/^\\d{1,3}(\\.\\d{1,3}){3}$/)) {
+                        error("ERROR: Invalid EC2 IP for deployment: '${ec2Host}'")
+                    }
 
-                        if "%EC2_HOST%"=="" (
-                            echo ERROR: EC2_HOST is empty.
-                            exit /b 1
+                    withCredentials([
+                        sshUserPrivateKey(
+                            credentialsId: 'cicd-key',
+                            keyFileVariable: 'SSH_KEY',
+                            usernameVariable: 'SSH_USER'
+                        ),
+                        usernamePassword(
+                            credentialsId: 'dockerhub-test',
+                            usernameVariable: 'DOCKER_USER',
+                            passwordVariable: 'DOCKER_PASS'
                         )
+                    ]) {
+                        bat """
+                            if not exist "%WORKSPACE%\\\\cicd-key-ssh.pem" (
+                                copy /Y "%SSH_KEY%" "%WORKSPACE%\\\\cicd-key-ssh.pem"
+                            )
 
-                        if "%EC2_HOST%"=="null" (
-                            echo ERROR: EC2_HOST is null.
-                            exit /b 1
-                        )
+                            icacls "%WORKSPACE%\\\\cicd-key-ssh.pem" /inheritance:r
+                            icacls "%WORKSPACE%\\\\cicd-key-ssh.pem" /grant:r "SYSTEM:R"
 
-                        set "SSH_KEY_COPY=%WORKSPACE%\\cicd-key-deploy.pem"
+                            if errorlevel 1 exit /b 1
 
-                        copy /Y "%SSH_KEY%" "!SSH_KEY_COPY!" >nul
+                            echo.
+                            echo ==========================================
+                            echo DEPLOYING TO EC2: ${ec2Host}
+                            echo ==========================================
 
-                        if errorlevel 1 (
-                            echo Failed to copy deployment SSH key.
-                            exit /b 1
-                        )
+                            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -i "%WORKSPACE%\\\\cicd-key-ssh.pem" %SSH_USER%@${ec2Host} "echo '%DOCKER_PASS%' | docker login -u '%DOCKER_USER%' --password-stdin && docker pull %DOCKER_IMAGE%:latest && docker rm -f cicd-demo-app 2>/dev/null || true && docker run -d --name cicd-demo-app -p 5000:5000 --restart unless-stopped %DOCKER_IMAGE%:latest"
 
-                        icacls "!SSH_KEY_COPY!" /inheritance:r
-                        icacls "!SSH_KEY_COPY!" /grant:r "SYSTEM:R"
+                            if errorlevel 1 (
+                                echo ERROR: Deployment failed.
+                                exit /b 1
+                            )
 
-                        if errorlevel 1 (
-                            echo Failed to set deployment SSH key permissions.
-                            exit /b 1
-                        )
-
-                        echo Deploying to %EC2_HOST%...
-
-                        ssh -o StrictHostKeyChecking=no -i "!SSH_KEY_COPY!" %SSH_USER%@%EC2_HOST% "echo '%DOCKER_PASS%' | docker login -u '%DOCKER_USER%' --password-stdin && docker pull %DOCKER_IMAGE%:%BUILD_NUMBER% && docker rm -f cicd-demo-app 2>/dev/null || true && docker run -d --name cicd-demo-app --restart unless-stopped -p 5000:5000 %DOCKER_IMAGE%:%BUILD_NUMBER%"
-                    '''
+                            echo.
+                            echo ==========================================
+                            echo DEPLOYMENT SUCCESSFUL
+                            echo ==========================================
+                        """
+                    }
                 }
             }
         }
@@ -434,14 +443,28 @@ pipeline {
                 echo ' STEP 16: HEALTH CHECK'
                 echo '=========================================='
 
-                bat '''
-                    powershell -NoProfile -Command "$url = 'http://%EC2_HOST%:5000/health'; for ($i = 1; $i -le 12; $i++) { try { $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 10; if ($r.StatusCode -eq 200) { Write-Host 'Health check successful.'; exit 0 } } catch { Write-Host ('Health check attempt ' + $i + ' failed.') }; Start-Sleep -Seconds 10 }; Write-Host 'Health check failed.'; exit 1"
-                '''
+                script {
+                    def ec2Host = readFile('terraform/ec2_public_ip.txt').trim()
+
+                    if (!ec2Host ||
+                        ec2Host == 'null' ||
+                        !ec2Host.matches(/^\\d{1,3}(\\.\\d{1,3}){3}$/)) {
+                        error("ERROR: Invalid EC2 IP for health check: '${ec2Host}'")
+                    }
+
+                    bat """
+                        powershell -NoProfile -Command "Write-Host 'Checking http://${ec2Host}:5000/health'; try { \$r = Invoke-WebRequest -Uri 'http://${ec2Host}:5000/health' -UseBasicParsing -TimeoutSec 15; Write-Host ('HTTP Status: ' + \$r.StatusCode); Write-Host \$r.Content; if (\$r.StatusCode -ne 200) { exit 1 } } catch { Write-Host ('Health check failed: ' + \$_.Exception.Message); exit 1 }"
+                    """
+                }
             }
         }
     }
 
     post {
+        always {
+            echo 'Pipeline execution completed.'
+        }
+
         success {
             echo '=========================================='
             echo ' CI/CD PIPELINE SUCCESSFUL'
@@ -453,10 +476,6 @@ pipeline {
             echo '=========================================='
             echo ' CI/CD PIPELINE FAILED'
             echo '=========================================='
-        }
-
-        always {
-            echo 'Pipeline execution completed.'
         }
     }
 }
