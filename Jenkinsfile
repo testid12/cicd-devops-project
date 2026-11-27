@@ -337,36 +337,27 @@ pipeline {
 
                             echo SSH key format is valid.
 
-                            set "SSH_OK=0"
+                           for /L %%i in (1,1,12) do (
+    echo.
+    echo ===== SSH ATTEMPT %%i/12 =====
 
-                            for /L %%i in (1,1,12) do (
-                                echo.
-                                echo ===== SSH ATTEMPT %%i/12 =====
+    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes -i "%SSH_KEY%" %SSH_USER%@${ec2Host} "echo SSH connection successful"
 
-                                ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes -i "%SSH_KEY%" %SSH_USER%@${ec2Host} "echo SSH connection successful"
+    if not errorlevel 1 (
+        echo.
+        echo ==========================================
+        echo SSH CONNECTION SUCCESSFUL
+        echo ==========================================
+        exit /b 0
+    )
 
-                                if not errorlevel 1 (
-                                    set "SSH_OK=1"
-                                    goto :ssh_success
-                                )
+    echo SSH not ready yet. Waiting 10 seconds...
+    timeout /t 10 /nobreak >nul
+)
 
-                                echo SSH not ready yet. Waiting 10 seconds...
-                                timeout /t 10 /nobreak >nul
-                            )
-
-                            :ssh_success
-
-                            if "!SSH_OK!"=="1" (
-                                echo.
-                                echo ==========================================
-                                echo SSH CONNECTION SUCCESSFUL
-                                echo ==========================================
-                                exit /b 0
-                            )
-
-                            echo.
-                            echo ERROR: Could not connect to EC2 through SSH.
-                            exit /b 1
+echo.
+echo ERROR: Could not connect to EC2 through SSH after 12 attempts.
+exit /b 1
                         """
                     }
                 }
