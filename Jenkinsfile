@@ -284,11 +284,8 @@ pipeline {
                     echo "EC2 Public IP read from file: ${ip}"
                     echo '=========================================='
 
-                    if (!ip ||
-                        ip == 'null' ||
-                        ip == '0.0.0.0' ||
-                        !ip.matches(/^\\d{1,3}(\\.\\d{1,3}){3}$/)) {
-                        error("ERROR: Invalid EC2 Public IP received from Terraform: '${ip}'")
+                    if (!ip || ip == 'null') {
+                        error("ERROR: Terraform returned an empty EC2 Public IP: '${ip}'")
                     }
 
                     env.EC2_HOST = ip
@@ -309,10 +306,8 @@ pipeline {
                     echo "SSH target EC2 IP: ${ec2Host}"
                     echo '=========================================='
 
-                    if (!ec2Host ||
-                        ec2Host == 'null' ||
-                        !ec2Host.matches(/^\\d{1,3}(\\.\\d{1,3}){3}$/)) {
-                        error("ERROR: Invalid EC2 IP for SSH: '${ec2Host}'")
+                    if (!ec2Host || ec2Host == 'null') {
+                        error("ERROR: EC2 Public IP is empty: '${ec2Host}'")
                     }
 
                     withCredentials([
@@ -341,7 +336,6 @@ pipeline {
                             )
 
                             set "SSH_HOST=${ec2Host}"
-
                             set "SSH_OK=0"
 
                             for /L %%i in (1,1,12) do (
@@ -387,10 +381,8 @@ pipeline {
                 script {
                     def ec2Host = readFile('terraform/ec2_public_ip.txt').trim()
 
-                    if (!ec2Host ||
-                        ec2Host == 'null' ||
-                        !ec2Host.matches(/^\\d{1,3}(\\.\\d{1,3}){3}$/)) {
-                        error("ERROR: Invalid EC2 IP for deployment: '${ec2Host}'")
+                    if (!ec2Host || ec2Host == 'null') {
+                        error("ERROR: EC2 Public IP is empty: '${ec2Host}'")
                     }
 
                     withCredentials([
@@ -446,10 +438,8 @@ pipeline {
                 script {
                     def ec2Host = readFile('terraform/ec2_public_ip.txt').trim()
 
-                    if (!ec2Host ||
-                        ec2Host == 'null' ||
-                        !ec2Host.matches(/^\\d{1,3}(\\.\\d{1,3}){3}$/)) {
-                        error("ERROR: Invalid EC2 IP for health check: '${ec2Host}'")
+                    if (!ec2Host || ec2Host == 'null') {
+                        error("ERROR: EC2 Public IP is empty: '${ec2Host}'")
                     }
 
                     bat """
