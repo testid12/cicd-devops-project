@@ -292,83 +292,87 @@ pipeline {
                 }
             }
         }
+
         stage('Wait for SSH') {
-    steps {
-        echo 'Waiting for EC2 SSH to become available...'
+            steps {
+                echo '=========================================='
+                echo ' STEP 14: WAIT FOR SSH'
+                echo '=========================================='
 
-        script {
-            def ec2Host = readFile('terraform/ec2_public_ip.txt').trim()
+                script {
+                    def ec2Host = readFile('terraform/ec2_public_ip.txt').trim()
 
-            echo "SSH target EC2 IP: ${ec2Host}"
+                    echo "SSH target EC2 IP: ${ec2Host}"
 
-            if (!ec2Host || ec2Host == 'null') {
-                error("ERROR: EC2 Public IP is empty: '${ec2Host}'")
-            }
+                    if (!ec2Host || ec2Host == 'null') {
+                        error("ERROR: EC2 Public IP is empty: '${ec2Host}'")
+                    }
 
-            withCredentials([
-                sshUserPrivateKey(
-                    credentialsId: 'cicd-key',
-                    keyFileVariable: 'SSH_KEY',
-                    usernameVariable: 'SSH_USER'
-                )
-            ]) {
-                bat """
-                    echo SSH_USER=%SSH_USER%
-                    echo EC2_HOST=${ec2Host}
-                    echo SSH_KEY=%SSH_KEY%
-
-                    icacls "%SSH_KEY%" /inheritance:r
-                    icacls "%SSH_KEY%" /grant:r "SYSTEM:R"
-
-                    if errorlevel 1 (
-                        echo ERROR: Failed to set SSH key permissions.
-                        exit /b 1
-                    )
-
-                    ssh-keygen -y -f "%SSH_KEY%" >nul
-
-                    if errorlevel 1 (
-                        echo ERROR: Jenkins SSH private key cannot be parsed by OpenSSH.
-                        exit /b 1
-                    )
-
-                    echo SSH key format is valid.
-
-                    set "SSH_OK=0"
-
-                    for /L %%i in (1,1,12) do (
-                        echo.
-                        echo ===== SSH ATTEMPT %%i/12 =====
-
-                        ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes -i "%SSH_KEY%" %SSH_USER%@${ec2Host} "echo SSH connection successful"
-
-                        if not errorlevel 1 (
-                            set "SSH_OK=1"
-                            goto :ssh_success
+                    withCredentials([
+                        sshUserPrivateKey(
+                            credentialsId: 'cicd-key',
+                            keyFileVariable: 'SSH_KEY',
+                            usernameVariable: 'SSH_USER'
                         )
+                    ]) {
+                        bat """
+                            echo SSH_USER=%SSH_USER%
+                            echo EC2_HOST=${ec2Host}
+                            echo SSH_KEY=%SSH_KEY%
 
-                        echo SSH not ready yet. Waiting 10 seconds...
-                        timeout /t 10 /nobreak >nul
-                    )
+                            icacls "%SSH_KEY%" /inheritance:r
+                            icacls "%SSH_KEY%" /grant:r "SYSTEM:R"
 
-                    :ssh_success
+                            if errorlevel 1 (
+                                echo ERROR: Failed to set SSH key permissions.
+                                exit /b 1
+                            )
 
-                    if "!SSH_OK!"=="1" (
-                        echo.
-                        echo ==========================================
-                        echo SSH CONNECTION SUCCESSFUL
-                        echo ==========================================
-                        exit /b 0
-                    )
+                            ssh-keygen -y -f "%SSH_KEY%" >nul
 
-                    echo.
-                    echo ERROR: Could not connect to EC2 through SSH.
-                    exit /b 1
-                """
+                            if errorlevel 1 (
+                                echo ERROR: Jenkins SSH private key cannot be parsed by OpenSSH.
+                                exit /b 1
+                            )
+
+                            echo SSH key format is valid.
+
+                            set "SSH_OK=0"
+
+                            for /L %%i in (1,1,12) do (
+                                echo.
+                                echo ===== SSH ATTEMPT %%i/12 =====
+
+                                ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes -i "%SSH_KEY%" %SSH_USER%@${ec2Host} "echo SSH connection successful"
+
+                                if not errorlevel 1 (
+                                    set "SSH_OK=1"
+                                    goto :ssh_success
+                                )
+
+                                echo SSH not ready yet. Waiting 10 seconds...
+                                timeout /t 10 /nobreak >nul
+                            )
+
+                            :ssh_success
+
+                            if "!SSH_OK!"=="1" (
+                                echo.
+                                echo ==========================================
+                                echo SSH CONNECTION SUCCESSFUL
+                                echo ==========================================
+                                exit /b 0
+                            )
+
+                            echo.
+                            echo ERROR: Could not connect to EC2 through SSH.
+                            exit /b 1
+                        """
+                    }
+                }
             }
         }
-    }
-}
+
         stage('Deploy') {
             steps {
                 echo '=========================================='
@@ -395,21 +399,20 @@ pipeline {
                         )
                     ]) {
                         bat """
-                            if not exist "%WORKSPACE%\\\\cicd-key-ssh.pem" (
-                                copy /Y "%SSH_KEY%" "%WORKSPACE%\\\\cicd-key-ssh.pem"
+                            icacls "%SSH_KEY%" /inheritance:r
+                            icacls "%SSH_KEY%" /grant:r "SYSTEM:R"
+
+                            if errorlevel 1 (
+                                echo ERROR: Failed to set SSH key permissions.
+                                exit /b 1
                             )
-
-                            icacls "%WORKSPACE%\\\\cicd-key-ssh.pem" /inheritance:r
-                            icacls "%WORKSPACE%\\\\cicd-key-ssh.pem" /grant:r "SYSTEM:R"
-
-                            if errorlevel 1 exit /b 1
 
                             echo.
                             echo ==========================================
                             echo DEPLOYING TO EC2: ${ec2Host}
                             echo ==========================================
 
-                            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -i "%WORKSPACE%\\\\cicd-key-ssh.pem" %SSH_USER%@${ec2Host} "echo '%DOCKER_PASS%' | docker login -u '%DOCKER_USER%' --password-stdin && docker pull %DOCKER_IMAGE%:latest && docker rm -f cicd-demo-app 2>/dev/null || true && docker run -d --name cicd-demo-app -p 5000:5000 --restart unless-stopped %DOCKER_IMAGE%:latest"
+                            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes -i "%SSH_KEY%" %SSH_USER%@${ec2Host} "echo '%DOCKER_PASS%' | docker login -u '%DOCKER_USER%' --password-stdin && docker pull %DOCKER_IMAGE%:latest && docker rm -f cicd-demo-app 2>/dev/null || true && docker run -d --name cicd-demo-app -p 5000:5000 --restart unless-stopped %DOCKER_IMAGE%:latest"
 
                             if errorlevel 1 (
                                 echo ERROR: Deployment failed.
@@ -440,7 +443,7 @@ pipeline {
                     }
 
                     bat """
-                        powershell -NoProfile -Command "Write-Host 'Checking http://${ec2Host}:5000/health'; try { \$r = Invoke-WebRequest -Uri 'http://${ec2Host}:5000/health' -UseBasicParsing -TimeoutSec 15; Write-Host ('HTTP Status: ' + \$r.StatusCode); Write-Host \$r.Content; if (\$r.StatusCode -ne 200) { exit 1 } } catch { Write-Host ('Health check failed: ' + \$_.Exception.Message); exit 1 }"
+                        powershell -NoProfile -Command "Write-Host 'Checking http://${ec2Host}:5000/health'; try { \\$r = Invoke-WebRequest -Uri 'http://${ec2Host}:5000/health' -UseBasicParsing -TimeoutSec 15; Write-Host ('HTTP Status: ' + \\$r.StatusCode); Write-Host \\$r.Content; if (\\$r.StatusCode -ne 200) { exit 1 } } catch { Write-Host ('Health check failed: ' + \\$_.Exception.Message); exit 1 }"
                     """
                 }
             }
