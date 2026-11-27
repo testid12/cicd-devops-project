@@ -1,51 +1,390 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
   <title>{{ project_name }}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+
+  <link
+    rel="stylesheet"
+    href="{{ url_for('static', filename='style.css') }}"
+  >
+
+  <style>
+    .result-box {
+      display: none;
+      margin-top: 20px;
+      padding: 20px;
+      border-radius: 12px;
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid rgba(0, 255, 255, 0.35);
+    }
+
+    .result-box h3 {
+      margin-top: 0;
+      color: #00ffff;
+    }
+
+    .result-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 10px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+    }
+
+    .result-row:last-child {
+      border-bottom: none;
+    }
+
+    .result-label {
+      font-weight: bold;
+    }
+
+    .result-value {
+      text-align: right;
+      word-break: break-word;
+    }
+
+    .success {
+      color: #00ff99;
+    }
+
+    .error {
+      color: #ff6b6b;
+    }
+
+    .loading {
+      color: #00ffff;
+    }
+  </style>
 </head>
+
 <body>
-  <div class="container">
-    <header class="hero">
-      <h1>🚀 {{ project_name }}</h1>
-      <p class="subtitle">End-to-end CI/CD Demo Application</p>
-    </header>
 
-    <main class="grid">
-      <section class="card">
-        <h2>Project Info</h2>
-        <table>
-          <tr><td>Developer</td><td>{{ developer }}</td></tr>
-          <tr><td>Environment</td><td><span class="badge">{{ deploy_env }}</span></td></tr>
-          <tr><td>Hostname</td><td>{{ hostname }}</td></tr>
-          <tr><td>Server Time</td><td>{{ server_time }}</td></tr>
-        </table>
-      </section>
+<div class="container">
 
-      <section class="card">
-        <h2>CI/CD Pipeline Status</h2>
-        <table>
-          <tr><td>Status</td><td><span class="status-ok">● {{ pipeline_status }}</span></td></tr>
-          <tr><td>App Version</td><td>{{ app_version }}</td></tr>
-          <tr><td>Build Number</td><td>#{{ build_number }}</td></tr>
-          <tr><td>Git Commit</td><td><code>{{ git_commit }}</code></td></tr>
-        </table>
-      </section>
+  <header class="hero">
+    <h1>🚀 {{ project_name }}</h1>
 
-      <section class="card">
-        <h2>Health Check</h2>
-        <p>This service exposes a health endpoint used by Docker, Jenkins
-        and load balancers to verify it is running correctly.</p>
-        <a class="btn" href="/health">GET /health</a>
-        <a class="btn btn-secondary" href="/api/version">GET /api/version</a>
-      </section>
-    </main>
+    <p class="subtitle">
+      End-to-end CI/CD Demo Application
+    </p>
+  </header>
 
-    <footer>
-      <p>Built with Flask &middot; Deployed via Jenkins + Docker + Terraform on AWS</p>
-    </footer>
-  </div>
+
+  <main class="grid">
+
+    <!-- PROJECT INFORMATION -->
+    <section class="card">
+
+      <h2>Project Info</h2>
+
+      <table>
+
+        <tr>
+          <td>Developer</td>
+          <td>{{ developer }}</td>
+        </tr>
+
+        <tr>
+          <td>Environment</td>
+          <td>
+            <span class="badge">
+              {{ deploy_env }}
+            </span>
+          </td>
+        </tr>
+
+        <tr>
+          <td>Hostname</td>
+          <td>{{ hostname }}</td>
+        </tr>
+
+        <tr>
+          <td>Server Time</td>
+          <td>{{ server_time }}</td>
+        </tr>
+
+      </table>
+
+    </section>
+
+
+    <!-- PIPELINE STATUS -->
+    <section class="card">
+
+      <h2>CI/CD Pipeline Status</h2>
+
+      <table>
+
+        <tr>
+          <td>Status</td>
+
+          <td>
+            <span class="status-ok">
+              ● {{ pipeline_status }}
+            </span>
+          </td>
+        </tr>
+
+        <tr>
+          <td>App Version</td>
+          <td>{{ app_version }}</td>
+        </tr>
+
+        <tr>
+          <td>Build Number</td>
+          <td>#{{ build_number }}</td>
+        </tr>
+
+        <tr>
+          <td>Git Commit</td>
+
+          <td>
+            <code>{{ git_commit }}</code>
+          </td>
+        </tr>
+
+      </table>
+
+    </section>
+
+
+    <!-- HEALTH CHECK -->
+    <section class="card">
+
+      <h2>Health Check</h2>
+
+      <p>
+        This service exposes a health endpoint used by Docker,
+        Jenkins and load balancers to verify that the application
+        is running correctly.
+      </p>
+
+      <button
+        class="btn"
+        onclick="checkHealth()">
+        GET /health
+      </button>
+
+
+      <button
+        class="btn btn-secondary"
+        onclick="getVersion()">
+        GET /api/version
+      </button>
+
+
+      <!-- RESULT AREA -->
+      <div
+        id="resultBox"
+        class="result-box">
+
+        <h3 id="resultTitle">
+          API Response
+        </h3>
+
+        <div id="resultContent"></div>
+
+      </div>
+
+    </section>
+
+  </main>
+
+
+  <footer>
+
+    <p>
+      Built with Flask · Deployed via Jenkins + Docker + Terraform on AWS
+    </p>
+
+  </footer>
+
+</div>
+
+
+<script>
+
+  async function checkHealth() {
+
+    showLoading("Checking application health...");
+
+    try {
+
+      const response = await fetch("/health");
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error("Health check failed");
+      }
+
+      showHealthResult(data);
+
+    } catch (error) {
+
+      showError(
+        "Health Check Failed",
+        error.message
+      );
+
+    }
+  }
+
+
+  async function getVersion() {
+
+    showLoading("Fetching application version...");
+
+    try {
+
+      const response = await fetch("/api/version");
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error("API request failed");
+      }
+
+      showVersionResult(data);
+
+    } catch (error) {
+
+      showError(
+        "API Version Request Failed",
+        error.message
+      );
+
+    }
+  }
+
+
+  function showLoading(message) {
+
+    const box = document.getElementById("resultBox");
+
+    box.style.display = "block";
+
+    document.getElementById("resultTitle").innerHTML =
+      "⏳ " + message;
+
+    document.getElementById("resultContent").innerHTML =
+      '<div class="loading">Please wait...</div>';
+  }
+
+
+  function showHealthResult(data) {
+
+    const box = document.getElementById("resultBox");
+
+    box.style.display = "block";
+
+    document.getElementById("resultTitle").innerHTML =
+      '<span class="success">✓ Application Healthy</span>';
+
+    document.getElementById("resultContent").innerHTML = `
+
+      <div class="result-row">
+        <span class="result-label">Status</span>
+        <span class="result-value success">
+          ${data.status}
+        </span>
+      </div>
+
+      <div class="result-row">
+        <span class="result-label">Service</span>
+        <span class="result-value">
+          ${data.service}
+        </span>
+      </div>
+
+      <div class="result-row">
+        <span class="result-label">Version</span>
+        <span class="result-value">
+          ${data.version}
+        </span>
+      </div>
+
+      <div class="result-row">
+        <span class="result-label">Timestamp</span>
+        <span class="result-value">
+          ${data.timestamp}
+        </span>
+      </div>
+
+    `;
+  }
+
+
+  function showVersionResult(data) {
+
+    const box = document.getElementById("resultBox");
+
+    box.style.display = "block";
+
+    document.getElementById("resultTitle").innerHTML =
+      '<span class="success">✓ Application Version</span>';
+
+    document.getElementById("resultContent").innerHTML = `
+
+      <div class="result-row">
+        <span class="result-label">Version</span>
+        <span class="result-value">
+          ${data.version}
+        </span>
+      </div>
+
+      <div class="result-row">
+        <span class="result-label">Build Number</span>
+        <span class="result-value">
+          #${data.build_number}
+        </span>
+      </div>
+
+      <div class="result-row">
+        <span class="result-label">Git Commit</span>
+        <span class="result-value">
+          ${data.git_commit}
+        </span>
+      </div>
+
+      <div class="result-row">
+        <span class="result-label">Environment</span>
+        <span class="result-value">
+          ${data.environment}
+        </span>
+      </div>
+
+    `;
+  }
+
+
+  function showError(title, message) {
+
+    const box = document.getElementById("resultBox");
+
+    box.style.display = "block";
+
+    document.getElementById("resultTitle").innerHTML =
+      '<span class="error">✗ ' + title + '</span>';
+
+    document.getElementById("resultContent").innerHTML = `
+
+      <div class="result-row">
+        <span class="result-label">Error</span>
+        <span class="result-value error">
+          ${message}
+        </span>
+      </div>
+
+    `;
+  }
+
+</script>
+
 </body>
 </html>
