@@ -420,24 +420,26 @@ exit /b 1
             }
         }
 
-     stage('Health Check') {
-    steps {
-        echo '=========================================='
-        echo ' STEP 16: HEALTH CHECK'
-        echo '=========================================='
+    stage('Health Check') {
+            steps {
+                echo '=========================================='
+                echo ' STEP 16: HEALTH CHECK'
+                echo '=========================================='
 
-        script {
-            def ec2Host = readFile('terraform/ec2_public_ip.txt').trim()
+                script {
+                    def ec2Host = readFile('terraform/ec2_public_ip.txt').trim()
 
-            if (!ec2Host || ec2Host == 'null') {
-                error("ERROR: EC2 Public IP is empty: '${ec2Host}'")
+                    if (!ec2Host || ec2Host == 'null') {
+                        error("ERROR: EC2 Public IP is empty: '${ec2Host}'")
+                    }
+
+                    echo "Checking application health at http://${ec2Host}:5000/health"
+
+                    bat """
+                        powershell -NoProfile -Command "try { \$r = Invoke-WebRequest -Uri 'http://${ec2Host}:5000/health' -UseBasicParsing -TimeoutSec 20; Write-Host 'HTTP Status:' \$r.StatusCode; Write-Host 'Response:' \$r.Content; if (\$r.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { Write-Host 'Health check failed:' \$_.Exception.Message; exit 1 }"
+                    """
+                }
             }
-
-            echo "Checking application health at http://${ec2Host}:5000/health"
-
-            bat """
-                powershell -NoProfile -Command "try { \$r = Invoke-WebRequest -Uri 'http://${ec2Host}:5000/health' -UseBasicParsing -TimeoutSec 20; Write-Host 'HTTP Status:' \$r.StatusCode; Write-Host 'Response:' \$r.Content; if (\$r.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { Write-Host 'Health check failed:' \$_.Exception.Message; exit 1 }"
-            """
         }
     }
 }
